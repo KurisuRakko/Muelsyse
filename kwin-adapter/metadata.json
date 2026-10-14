@@ -1,0 +1,8 @@
+{
+    "KPlugin": {
+        "Name": "Selkies KWin Adapter",
+        "Description": "为 Selkies 暴露受限的 KWin virtual output mode 准备接口",
+        "EnabledByDefault": false,
+        "License": "GPL-2.0-or-later"
+    }
+}

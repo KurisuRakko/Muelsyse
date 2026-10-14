@@ -1,0 +1,46 @@
+[Unit]
+Description=KDE Plasma Wayland virtual host session for Selkies
+ConditionUser=rakko
+# 预检未批准前没有这个标记，服务即使被误 enable 也不会启动。
+ConditionPathExists=%h/.config/selkies/remote-desktop.production-enabled
+After=pipewire.service wireplumber.service
+Before=remote-desktop-selkies.service
+
+[Service]
+Type=simple
+Environment=HOME=%h
+Environment=USER=rakko
+Environment=LOGNAME=rakko
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+Environment=XDG_CURRENT_DESKTOP=KDE
+Environment=XDG_SESSION_DESKTOP=KDE
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_MENU_PREFIX=plasma-
+Environment=QT_QPA_PLATFORM=wayland
+Environment=DESKTOP_SESSION=plasmawayland
+Environment=KDE_FULL_SESSION=true
+# 光标主题用 KDE 默认的 breeze_cursors：先前的浅色变体与 KDE 默认的 Breeze 观感不一致，
+# 桌面和设置里看起来就不是同一套主题。这里必须改，因为 systemd 发布的 XCURSOR_THEME
+# 优先级高于 kcminputrc，只改 KDE 配置文件不会生效。
+Environment=XCURSOR_THEME=breeze_cursors
+Environment=XCURSOR_SIZE=24
+Environment=WAYLAND_DISPLAY=wayland-remote-desktop
+Environment=SELKIES_KWIN_PREFIX=%h/build/kwin-adapter
+# kwin_wayland 与 selkieskwinadapter.so 的 DT_RUNPATH 指向构建它们时的临时目录
+# （agent scratch），那个目录随时可能被清掉。glibc 的搜索顺序里 LD_LIBRARY_PATH
+# 先于 DT_RUNPATH，所以这一行让 prefix 自己的 bin/ 成为 libkwin 的唯一来源，
+# 换 prefix 时也不会再去别处取库。
+Environment=LD_LIBRARY_PATH=%h/build/kwin-adapter/bin
+Environment=SELKIES_KWIN_ADAPTER_SOCKET=%t/selkies-kwin-adapter.sock
+Environment=KWIN_SCREENCAST_STATS=1
+# 必须走 launcher：若把 ExecStart 直接指向 Debian 装机自带的系统 kwin_wayland，
+# 它不加载 selkieskwinadapter.so 插件，抓屏链路会断；launcher 依据 SELKIES_KWIN_PREFIX
+# 改选隔离构建的 kwin_wayland 并补上 bin/kwin/plugins 的 QT_PLUGIN_PATH。
+ExecStart=%h/.local/libexec/selkies-wayland-session
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

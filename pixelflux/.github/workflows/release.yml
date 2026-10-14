@@ -1,0 +1,174 @@
+name: Release
+
+# A tag push releases that tag, which is the version the wheels carry: a
+# pre-release such as 2.2.0rc1 is released as one. A manual run releases the tag
+# it names and can hold the release off the "Latest" badge, for a fix to an
+# older series.
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and publish, tagging this run's commit when it is new (e.g. 2.1.0 or 2.2.0rc1)
+        type: string
+        required: true
+      latest:
+        description: Designate this release as the latest
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  # The tag this run releases: the pushed one, or the one a manual run names
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      notes: ${{ steps.notes.outputs.path }}
+    steps:
+      - name: Check the tag is a version pip keeps
+        # The tag is what the wheels are versioned as, so it has to be a PEP 440
+        # version spelled the way pip normalizes it, and it is checked before
+        # anything is created under that name
+        run: |
+          echo "${RELEASE_TAG}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.post[0-9]+|\.dev[0-9]+)?$' \
+            || { echo "::error::${RELEASE_TAG} is not a PEP 440 version (2.1.0, 2.2.0rc1)"; exit 1; }
+
+      - name: Tag the commit this run started from
+        # A manual run names the release, so a tag it does not find yet is
+        # created here on the commit the run was started from; an existing one
+        # is left pointing where it does, which is what re-releases a tag.
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" > /dev/null 2>&1; then
+            echo "${RELEASE_TAG} is already tagged"
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${RELEASE_TAG}" -f sha="${GITHUB_SHA}"
+            echo "${RELEASE_TAG} now tags ${GITHUB_SHA}"
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Resolve the release notes
+        id: notes
+        run: |
+          # A pre-release carries the notes of the release it leads to unless it
+          # was given its own
+          path="release-notes/${RELEASE_TAG}.md"
+          if [ ! -f "${path}" ]; then
+            path="release-notes/$(echo "${RELEASE_TAG}" | sed -E 's/((a|b|rc)[0-9]+|\.post[0-9]+|\.dev[0-9]+)$//').md"
+          fi
+          if [ ! -f "${path}" ]; then
+            echo "::error::no release notes for ${RELEASE_TAG}"
+            exit 1
+          fi
+          echo "path=${path}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      # One job per (arch, libc): an extra interpreter rebuilds only the PyO3
+      # layer and the extension, so splitting them would duplicate before-all
+      # for far less than it costs.
+      matrix:
+        platform: [manylinux, musllinux]
+        target:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.target.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Version the wheels as the tag
+        run: |
+          sed -i "s|^\( *\)version=.*|\1version=\"${RELEASE_TAG}\",|" setup.py
+          grep -q "version=\"${RELEASE_TAG}\"," setup.py
+
+      - name: Build wheels (${{ matrix.platform }}_${{ matrix.target.arch }})
+        uses: pypa/cibuildwheel@v4.2.0
+        env:
+          # Every interpreter cibuildwheel offers, floored by python_requires.
+          CIBW_BUILD: "*-${{ matrix.platform }}_${{ matrix.target.arch }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.target.arch }}-${{ matrix.platform }}
+          path: wheelhouse/*.whl
+          # A wheel is a deflated zip already, so the archive this is wrapped in
+          # cannot compress it further: levelling off spends no CPU re-deflating
+          # it for a size that does not move.
+          compression-level: 0
+
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-*
+          path: wheelhouse
+          merge-multiple: true
+
+      - name: Get release notes
+        id: notes
+        env:
+          NOTES: ${{ needs.check.outputs.notes }}
+        run: |
+          {
+            echo "content<<EOF"
+            cat "${NOTES}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Classify the tag
+        id: kind
+        env:
+          LATEST: ${{ inputs.latest }}
+        run: |
+          # A pre-release tag never takes the "Latest release" badge; a release
+          # takes it unless a manual run holds it back
+          latest=true
+          if [ "${LATEST}" = "false" ]; then latest=false; fi
+          case "${RELEASE_TAG}" in
+            *[ab]*|*rc*|*dev*) prerelease=true; latest=false ;;
+            *) prerelease=false ;;
+          esac
+          {
+            echo "prerelease=${prerelease}"
+            echo "make_latest=${latest}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          body: ${{ steps.notes.outputs.content }}
+          prerelease: ${{ steps.kind.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.kind.outputs.make_latest }}
+          files: wheelhouse/*.whl

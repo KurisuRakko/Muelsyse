@@ -1,0 +1,150 @@
+# Working on this repository
+
+Selkies is developed together with two sibling repositories, [pixelflux](https://github.com/selkies-project/pixelflux)
+(screen capture and video encode) and [pcmflux](https://github.com/selkies-project/pcmflux) (audio capture and
+encode). A change in one often belongs in another; coordinate across all three.
+
+This file holds working conventions and the cross-cutting invariants no single module reveals. Mechanism and
+rationale live in the docstring of the module that implements them, never here.
+
+## Comments and documentation
+
+The developer reference is generated from the docblocks, so explanation that lives in an inline comment is lost to
+it. Put rationale in the docblock of the function or module it explains, and prefer a clearer name or a small
+helper over a comment. An inline comment is for the line that stays surprising after that — a workaround for a
+specific bug, an ordering or value that looks wrong but is required — and says why the line is that way, not what
+it does. Comments are terse and current: no PR summaries, no issue or task numbers, no narration of what the code
+used to do. The prose under `docs/` follows the same rule: it describes what the tree does now, not what an
+earlier revision did or what a change replaced.
+
+Every language follows one shape: a Google-style docblock on the module, on every class, and on every function
+that is not trivially self-describing, with the types on the signature. A docblock opens with a summary line, then
+parameters, return value and exceptions only where non-obvious; never pad trivial helpers. Contrasting with a
+rejected design alternative is good rationale; narrating past revisions is forbidden. A module's docblock carries
+the mechanism the module implements — a fallback ladder, a wire framing, the `window` contract a streaming core
+publishes for the dashboards. Docblocks render as Markdown, so keep anything shaped like `<name>` or containing
+braces inside backticks.
+
+- Python: Google-style docstrings (`Args:`/`Returns:`/`Raises:`) plus type hints on signatures, kept as you touch
+  code. Hints must stay Python-3.9-safe: `Optional`/`Union` from `typing`, no `X | Y`, no new
+  `from __future__ import annotations`, and conditionally imported types (pixelflux, pcmflux, Xlib) never appear in
+  runtime-evaluated annotations — use `Any` rather than guess.
+- TypeScript (`.ts`/`.tsx`): JSDoc blocks with `@param name description`, `@returns`, `@throws`, and no types in
+  the tags — the signature is the type. Props are an `interface` or `type` with a line per field.
+- JavaScript (`.js`/`.jsx`): the same JSDoc blocks, but the tags carry the types (`@param {Type} name`,
+  `@returns {Type}`, `@typedef`/`@callback` for option bags and callbacks). The wish dashboard's `tsc` compiles
+  `selkies-web-core/lib` through `allowJs`, so these types are checked contracts: a `@type` on an exported
+  constant replaces its inferred type for every TypeScript consumer.
+- Both: a `/** ... @module */` block after the license header is the module docstring; `_`-prefixed members are
+  private and hidden from the reference; a React component documents what it renders and which core messages or
+  `window` state it consumes. A tag TypeDoc does not know (`@constructor`) is a build warning. Every docblock is
+  published, exported or not, so a closure's docblock is reference material, not a private note.
+
+Vendored code keeps upstream documentation style and is excluded from the reference: the Python forks
+`src/selkies/Xlib`, `src/selkies/webrtc` and `src/selkies/ice`, and the shadcn/ui primitives under
+`addons/selkies-dashboard-wish/src/components/ui`; only Selkies-added comments there follow these rules. The
+translation tables and the build helpers (`copy-*.js`, `gendb.js`, the vite and eslint configs) are excluded too.
+
+Update the translations whenever user-facing strings change, adding entries where necessary.
+
+## Testing
+
+Validate in a sandbox, never in the session you are shown: the devcontainer, or a host set up as the Agentic
+Development section of `docs/development.md` describes, where `scripts/ci/test-stack.sh` provides the display and
+audio the suites stream from on `E2E_DISPLAY`, apart from any desktop's `DISPLAY`. Run the cheapest tier that covers
+a change on every change (`pre-commit run --all-files`, `pytest tests -m unit`), the `integration` tier and the `e2e`
+blocks the change touches before reporting it, and a measurement for every claim that is a number. End-to-end testing
+is possible with the installed Firefox and Chrome, and Playwright/Selenium/Puppeteer/Cypress WebKit in place of
+Safari. Ask before building an environment on a machine that was not set up for one (Miniforge serves a host with a
+closed package manager; keep the system `libgbm.so` for GBM on NVIDIA and other GPUs) and take the operator's
+directives on how it is constructed and constrained. A suite that skips is a failure in CI; say which checks could
+not run where the hardware for them was not available.
+
+A defect that predates the change you are making is still in scope: fix it, or say precisely what is broken, what
+you ruled out, and what you would do next. The same applies to a failure you cannot reproduce yet — narrow it until
+it is fixed or precisely described, and never let a test that fails for an unknown reason pass unremarked.
+
+## Landing a change
+
+A change is ready when four questions have answers, and the commit or pull request gives them to the reviewer:
+
+1. Was the defect, or the missing behaviour, reproduced on the code before the change? A failing check or a
+   measurement on the old tree is that answer; an argument from the source is not.
+2. Is it gone, or present, on the exact code being committed, through the path a user takes? A test that reaches the
+   result only through a switch a user would never flip (a developer toggle, a debug key, a knob of the rig) has
+   confirmed nothing.
+3. Can the change affect behaviour it was not aimed at, and what was run to know? Name the suites and measurements
+   that ran and the paths they did not cover.
+4. Is the change stripped to what makes it work? Every line the first two answers do not need is noise the maintainers
+   have to sift; drop it, or say why it stays.
+
+A change in an area a maintainer has said they are working on goes to a branch and a pull request carrying those
+answers, never straight to `main`, whatever standing permission to push `main` exists. An optional path another
+component may offer (a protocol a compositor advertises, a driver feature, a device) is taken only when its presence
+is detected and never as the default: that it is exposed is not proof it works, and a reviewer has to be able to tell
+what runs where.
+
+## Engineering priorities
+
+- Parity between X11 and Wayland, WebSockets and WebRTC, and the default and wish dashboards: anything wired up on
+  one side but not the other is a bug. Prefer deduplicating code that serves the same purpose across modes over
+  keeping parallel copies, when you are confident there is no regression or can validate it.
+- Screen coroutine usage in Python and JavaScript and thread usage in every language so nothing hangs or lags.
+  Zero-copy and latency-reducing measures are always worth preserving or adding.
+- Compatibility spans Python 3.9 to 3.14 or higher and CUDA/NVENC 11 to 13 or higher. Gate on capabilities, never
+  on interpreter versions: prefer the API that already encapsulates the difference (e.g. a library's own runner),
+  else probe the feature itself (`hasattr`, a parameter's presence in `inspect.signature`, a try/except of the
+  API) — never compare `sys.version_info`.
+
+## Cross-cutting invariants
+
+Each is documented in full where named; read that before changing the subsystem.
+
+- The Wayland path is subprocess-free: never reintroduce wtype, wl-copy or similar forks where the in-process
+  pixelflux harness exists. Injection and clipboard are fallback ladders whose cooldowns re-probe the top rung
+  rather than latching (`src/selkies/input_handler.py` module docstring).
+- A DPI is an output scale on the session compositor, never Xft resources; only a changed capture scale restarts a
+  capture (`src/selkies/display_utils.py` module docstring).
+- Software H.264 is a property of the installed pixelflux build, never a Selkies setting
+  (`settings.software_h264_encoder`, `canonical_encoder`; the OpenH264 profile gate in `src/selkies/rtc.py`).
+- The sound-server control plane is in-process over pulsectl_asyncio under a never-cancel discipline; `pactl` is
+  only the fallback when the bindings are missing (`src/selkies/audio_control.py` module docstring).
+- Bulk traffic sharing the session connection is paced by an end-to-end gauge, never by the local send
+  queue alone: a proxy or a receive window in front absorbs writes, so that queue reads empty on the very
+  transfer burying the stream (`selkies._bulk_pace`, `stream_server.UplinkGauge`; WebRTC instead rides
+  SCTP's own congestion control, which no such hop can hide).
+- A modifier's role comes from the keysym the client resolved for it, never from the engine's flags:
+  browsers name the same physical key differently (macOS Option is `AltGraph` to Gecko, `Alt` to Blink, a
+  Meta key to WebKit). That decides both text-versus-shortcut and when a held modifier is stale
+  (`Input._composesText`, `Input._releaseDesyncedModifiers`).
+- Every display of an extended desktop is published as a RandR logical monitor listing the physical output,
+  because a toolkit realizes a monitor only where one is listed; whether the server lets several monitors share
+  the output is read back from the reply rather than assumed, since RandR 1.5 gives an output to one monitor and
+  servers before 21.1 enforce that (`display_utils._sync_set_selkies_layout`).
+- One remote pointer is driven by an `Input` per display page, so a pointer message carries the buttons the
+  event reports held, never the transitions one page happened to witness: a held drag crosses between pages,
+  reaching one that never saw the press and leaving one that never sees the release
+  (`Input._mouseButtonMovement`).
+- That drag is placed through the stream box the page it crossed onto published in desktop coordinates (the
+  `vp` verb), never from the grabbed page's own coordinates: two viewports share no origin, chrome height or
+  device pixel ratio. Two events have to agree on the offset between a page's client frame and the desktop's
+  before it publishes a box, because page zoom scales one frame and not the other, and short of that agreement
+  the crossing keeps to the scaled overshoot. So does a crossing between two boxes that overlap on the desktop:
+  two windows cannot both be under the pointer, and an engine reporting screen coordinates relative to its own
+  window publishes exactly such boxes (`Input._noteScreenAnchor`, `Input._mapToLayout`).
+- A client asks the server only for what its own decoder will take, measured rather than assumed: engines
+  differ on H.264 4:4:4 and change with every release, and one whose decoder lacks the profile shows no picture
+  at all rather than a worse one (`util.canDecodeFullColor`, `canDecodeEncoder`).
+- The webcam uplink mirrors the microphone: nothing about a frame is decoded or copied in Python
+  (`addons/selkies-web-core/lib/webcam-capture.js` header, `src/selkies/webcam.py`,
+  `addons/v4l2-interposer/v4l2_interposer.c` header for the interposer's locking rules).
+- What a session starts with is one rule both transports read (`settings.pipeline_starts_on`, the
+  `*_on_start` settings): the server captures only what a page receives and the page requests only what
+  the policy or the user turned on, so nothing is started only to be stopped and a capture nobody receives
+  never runs (`media_pipeline` module docstring, `DataStreamingServer._video_start_state`, each core's
+  `applyStartPolicy`).
+- The WebRTC ICE topology is decided once, at startup: `RTCApp.open_ice_muxes` binds the shared UDP and
+  TCP ports the settings name (failing the service on a port in use), and every peer's gatherer reads the
+  muxes and the ICE-lite choice from its `RTCConfiguration`, never from the settings directly; sessions on
+  a shared socket are told apart by their ICE username fragment alone, which is why it is eight characters
+  (`ice.mux` module docstring, `ice.Connection`).

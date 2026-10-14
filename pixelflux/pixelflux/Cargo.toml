@@ -1,0 +1,111 @@
+[package]
+name = "pixelflux"
+version = "2.1.0"
+edition = "2024"
+# let-chains (stable in edition 2024 since 1.88) are the newest language feature used.
+rust-version = "1.89"
+
+[lib]
+name = "pixelflux"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.29.2", features = ["extension-module"] }
+wayland-server = { version = "0.31.10", features = ["dlopen"] }
+wayland-protocols = { version = "0.32", features = ["server", "client", "staging"] }
+wayland-client = "0.31"
+# The generated KDE output bindings (src/wayland/kdeproto.rs) build from the
+# XMLs vendored under protocols/, so the scanner, the backend it references and
+# the bitflags its enums expand to are direct deps.
+wayland-scanner = "0.31"
+wayland-backend = "0.3"
+bitflags = "2"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+memmap2 = "0.9"
+crossbeam-channel = "0.5"
+calloop = "0.14"
+turbojpeg = "1.3" 
+rayon = "1.10"
+# Software H.264 is one of two encoders, chosen at build time by the features below:
+# GPL-2.0+ libx264 (the default `gpl` feature) or BSD-licensed Cisco OpenH264 (the
+# `openh264` feature, used when `gpl` is off; setup.py selects it for
+# PIXELFLUX_ENABLE_GPL=0). OpenH264 builds its vendored C source (C toolchain + nasm),
+# no runtime download; openh264-sys2 carries the raw set_option calls (live bitrate,
+# slice layout) the safe wrapper does not expose.
+x264-sys = { version = "0.2.2", optional = true }
+openh264 = { version = "0.9", optional = true }
+openh264-sys2 = { version = "0.9", optional = true }
+libc = "0.2"
+# fast_mode enables YuvConversionMode::Fast: empirically 1.23x faster than libyuv ARGBToI420
+# on x86-64-v3 (AVX2) at <=1 LSB error vs a float BT.709 reference (accuracy preserved).
+yuv = { version = "0.8.9", features = ["fast_mode"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+gbm = "0.18" 
+libloading = "0.9"
+xcursor = "0.3.1"
+# X11 host capture (replaces the C++ XShm/XFixes path): shm = XShm zero-copy grab,
+# xfixes = hardware cursor image. Pure-Rust XCB; links the system libxcb.
+x11rb = { version = "0.13", features = ["shm", "xfixes", "xtest", "randr"] }
+image = "=0.25.9"
+# The crate's build.rs probes the FFmpeg found via pkg-config and emits
+# per-version cfgs; one crate version supports FFmpeg 3.0 UP TO the release it
+# is named after (8.1.0 = "at most 8.1", not "exactly 8.1"). The VAAPI encoder
+# here uses 5.1-era API only, so any system FFmpeg 6.x-8.1 builds; bump the
+# crate when targeting a newer FFmpeg release. Only avcodec+avfilter are used
+# (avutil is implicit), so the default avformat/avdevice/swscale/swresample
+# components — and their dev packages — are not required.
+ffmpeg-sys-next = { version = "8.1", default-features = false, features = ["avcodec", "avfilter"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
+cfg-if = "1"
+
+# KWin 的原生 screencast 后端通过用户 PipeWire daemon 接收 DMA-BUF；
+# 仅在 Linux 构建，避免把主机专用依赖带到其他平台。
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = { version = "0.10", features = ["v0_3_65"] }
+
+[dependencies.nvcodec-sys]
+path = "nvcodec-sys"
+features = ["cuda"]
+
+[features]
+default = ["gpl"]
+## GPL-licensed components: libx264 (GPL-2.0+) as the software H.264 encoder. Wins over
+## `openh264` whenever both are enabled.
+gpl = ["dep:x264-sys"]
+## BSD-licensed Cisco OpenH264 as the software H.264 encoder of a build without `gpl`;
+## the crate fails to compile with neither feature (no software H.264 at all).
+openh264 = ["dep:openh264", "dep:openh264-sys2"]
+
+# The OpenH264 crates are dev-dependencies as well, so the OpenH264 encoder and the
+# webcam H.264 round trip are always built and tested, whichever encoder the build ships.
+[dev-dependencies]
+openh264 = "0.9"
+openh264-sys2 = "0.9"
+
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay"
+rev = "5de53056b5cafd453371af2d4e955931ce87ef71"
+default-features = false
+features = [
+    "backend_drm",
+    "backend_egl",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "renderer_gl", 
+    "renderer_pixman",
+    "use_system_lib",
+    "desktop",
+    "wayland_frontend",
+]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

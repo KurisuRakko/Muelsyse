@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Selkies KWin PipeWire POC probe
+Comment=KWin 权限匹配用的文本 DMA-BUF 探针
+Exec=/usr/bin/true
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
+NoDisplay=true

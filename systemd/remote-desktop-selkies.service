@@ -1,0 +1,69 @@
+[Unit]
+Description=Selkies KWin Wayland host capture
+ConditionUser=rakko
+# 预检未批准前没有这个标记，服务即使被误 enable 也不会启动。
+ConditionPathExists=%h/.config/selkies/remote-desktop.production-enabled
+Requires=remote-desktop-wayland.service
+BindsTo=remote-desktop-wayland.service
+After=remote-desktop-wayland.service pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+EnvironmentFile=-%h/.config/selkies/remote-desktop.env
+Environment=HOME=%h
+Environment=USER=rakko
+Environment=LOGNAME=rakko
+Environment=CUSTOM_USER=rakko
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+Environment=XDG_CURRENT_DESKTOP=KDE
+Environment=XDG_SESSION_TYPE=wayland
+Environment=QT_QPA_PLATFORM=wayland
+Environment=PYTHONPATH=%h/.local/share/remote-desktop/selkies-kwin/site:/opt/selkies/lib/python3.13/site-packages
+Environment=SELKIES_WEB_ROOT=%h/.local/share/remote-desktop/selkies-kwin/site/selkies_web
+Environment=WAYLAND_DISPLAY=wayland-remote-desktop
+Environment=PIXELFLUX_WAYLAND=true
+Environment=SELKIES_ADDR=127.0.0.1
+Environment=SELKIES_PORT=8090
+Environment=SELKIES_WAYLAND_HOST_DISPLAY=wayland-remote-desktop
+Environment=SELKIES_WAYLAND_HOST_BACKEND=kwin
+Environment=SELKIES_KWIN_ADAPTER_SOCKET=%t/selkies-kwin-adapter.sock
+Environment=PIXELFLUX_KWIN_STATS=1
+Environment=DRI_NODE=/dev/dri/renderD128
+Environment=DRINODE=/dev/dri/renderD128
+Environment=AUTO_GPU=intel
+Environment=SELKIES_ENCODER=h264enc
+Environment=SELKIES_FRAMERATE=60-60
+Environment=SELKIES_AUDIO_ENABLED=true
+Environment=SELKIES_AUDIO_ON_START=true
+# 前端可见性判据只看 |locked、不看 value：不带后缀的关闭仍会渲染开关，
+# 用户点了会被服务端静默丢弃，所以这些关闭项必须带 |locked。
+Environment=SELKIES_MICROPHONE_ENABLED=false|locked
+Environment=SELKIES_MICROPHONE_ON_START=false|locked
+Environment=SELKIES_WEBCAM_ENABLED=false|locked
+Environment=SELKIES_WEBCAM_ON_START=false|locked
+Environment=SELKIES_GAMEPAD_ENABLED=false|locked
+Environment=SELKIES_GAMEPAD_ON_START=false|locked
+Environment=SELKIES_FILE_TRANSFERS=none
+Environment=SELKIES_COMMAND_ENABLED=false
+Environment=SELKIES_ENABLE_CLIPBOARD=true
+Environment=SELKIES_ENABLE_BINARY_CLIPBOARD=true
+Environment=SELKIES_ENABLE_BASIC_AUTH=false|locked
+Environment=SELKIES_ENABLE_HTTPS=false|locked
+Environment=SELKIES_ENABLE_DUAL_MODE=false|locked
+Environment=SELKIES_ENABLE_RESIZE=true
+# true：浏览器按服务端下发的 KDE 光标位图，用 CSS cursor:url(...) 自行渲染光标外观。
+# 必须带 |locked：不带锁定时前端按 resolveConditionalSetting 解析这一项——先看服务端
+# 值里的 server.locked，没有锁就改用 localStorage 里 stored 的旧值，也就是「浏览器存过
+# 的优先于服务端」。早期本项曾被锁成 false，那个 false 早已被写进用户浏览器的
+# localStorage，于是后续把服务端改成 true 也永远被 stored=false 压过去，光标退回 canvas
+# 绘制（有延迟）。锁定后服务端值永远生效，代价是侧栏里不再显示这个开关。
+Environment=SELKIES_USE_BROWSER_CURSORS=true|locked
+ExecStart=%h/.local/libexec/selkies-python3.13 -m selkies
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

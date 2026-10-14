@@ -1,0 +1,91 @@
+services:
+  remote-desktop:
+    container_name: rakko-remote-desktop
+    hostname: rakko-remote-desktop
+    image: ghcr.io/selkies-project/selkies-egl-desktop:26.04
+    restart: unless-stopped
+
+    # Cloudflare Tunnel 在容器外终止 HTTPS，容器内部是 HTTP，因此覆盖镜像自带的 HTTPS healthcheck。
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/status >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    # 只把本机回环端口交给 Cloudflare Tunnel，禁止局域网和公网直连。
+    ports:
+      - "127.0.0.1:8090:8080/tcp"
+
+    # 官方镜像要求浏览器拥有足够的共享内存；Intel/AMD 使用 DRM 节点。
+    shm_size: "2gb"
+    devices:
+      - "/dev/dri:/dev/dri:rwm"
+    group_add:
+      - "${RENDER_GID:?请设置 RENDER_GID，例如 getent group render 的 GID}"
+      - "${VIDEO_GID:?请设置 VIDEO_GID，例如 getent group video 的 GID}"
+
+    # 只保留全新的桌面用户目录和 EGL 缓存，不挂载旧项目或主机桌面。
+    volumes:
+      - remote-desktop-home:/home/ubuntu
+      - remote-desktop-cache:/cache
+
+    environment:
+      TZ: Australia/Sydney
+      # PASSWD 仍用于容器内 ubuntu 用户；网页 Basic Auth 已由下方显式关闭。
+      PASSWD: "${REMOTE_DESKTOP_PASSWD:?请通过 1Password CLI 注入 REMOTE_DESKTOP_PASSWD}"
+
+      # 网关已经在公网入口完成鉴权，Selkies 只监听本机回环端口。
+      SELKIES_ENABLE_BASIC_AUTH: "false|locked"
+      SELKIES_ENABLE_HTTPS: "false|locked"
+      SELKIES_MODE: websockets
+      SELKIES_ENABLE_DUAL_MODE: "false|locked"
+
+      # 独立无头 Plasma 会话；Wayland 路径避免依赖主机 X11/TigerVNC 会话。
+      SELKIES_WAYLAND: "true"
+      SELKIES_ENCODER: h264enc
+      SELKIES_ENCODE_DRI: /dev/dri/renderD128
+      SELKIES_RENDER_DRI: /dev/dri/renderD128
+      SELKIES_AUTO_GPU: "true"
+      SELKIES_USE_CPU: "false|locked"
+
+      # 4K/60 硬目标；锁住客户端可调范围，避免浏览器悄悄降级。
+      SELKIES_MANUAL_RESOLUTION: "true|locked"
+      SELKIES_MANUAL_WIDTH: "3840"
+      SELKIES_MANUAL_HEIGHT: "2160"
+      SELKIES_FRAMERATE: "60-60"
+      SELKIES_RATE_CONTROL_MODE: crf
+      SELKIES_ENABLE_RATE_CONTROL: "true|locked"
+      SELKIES_VIDEO_CRF: "18-18"
+      SELKIES_VIDEO_ON_START: "true|locked"
+
+      # WebSocket 客户端只保留很短的回压队列，优先丢弃过时数据，避免卡顿时越积越延迟。
+      SELKIES_BACKPRESSURE_QUEUE_SIZE: "4"
+      # 4K/60 交互优先；完整 H.264 画面仍使用 CRF 18，关闭额外的静态重绘突发。
+      SELKIES_USE_PAINT_OVER_QUALITY: "false|locked"
+
+      # 只传桌面播放音频，不接收浏览器麦克风。
+      SELKIES_AUDIO_ENABLED: "true|locked"
+      SELKIES_AUDIO_ON_START: "true|locked"
+      SELKIES_MICROPHONE_ENABLED: "false|locked"
+      SELKIES_MICROPHONE_ON_START: "false|locked"
+      SELKIES_AUDIO_FRAME_DURATION_MS: "10"
+      SELKIES_AUDIO_BITRATE: "128000"
+
+      # 开启双向文字/图片剪贴板。
+      SELKIES_ENABLE_CLIPBOARD: "true|locked"
+      SELKIES_ENABLE_BINARY_CLIPBOARD: "true|locked"
+
+      # 关闭不需要的输入和高权限控制面。
+      SELKIES_WEBCAM_ENABLED: "false|locked"
+      SELKIES_WEBCAM_ON_START: "false|locked"
+      SELKIES_GAMEPAD_ENABLED: "false|locked"
+      SELKIES_GAMEPAD_ON_START: "false|locked"
+      SELKIES_FILE_TRANSFERS: none
+      SELKIES_COMMAND_ENABLED: "false|locked"
+
+volumes:
+  remote-desktop-home:
+    name: rakko-remote-desktop-home
+  remote-desktop-cache:
+    name: rakko-remote-desktop-cache

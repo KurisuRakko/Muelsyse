@@ -1,0 +1,19 @@
+# 构建产物（本仓库只放源码；编译在仓库外的 build 目录进行）
+build/
+target/
+__pycache__/
+node_modules/
+*.o
+*.so
+*.pyc
+.pytest_cache/
+CMakeFiles/
+CMakeCache.txt
+
+# 主机部署侧（原 newpcsetup）
+.DS_Store
+config/*.env
+!config/*.env.example
+
+# 本地编码助手配置，不随仓库发布
+.claude/

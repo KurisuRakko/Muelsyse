@@ -1,0 +1,202 @@
+name: Release
+
+# Maintainer-triggered release: builds the wheel ONCE at the release version,
+# then builds multi-arch images, native packages and AppImages around it, and
+# assembles a DRAFT GitHub release with every build artifact attached. The
+# draft is finalized and published manually.
+#
+# The `latest` input decides whether the release is designated as the latest
+# everywhere at once: the floating `latest` image tags and the "Latest" badge of
+# the published release. A release is by default, a pre-release is not, and a
+# run can force either way; GitHub gives no pre-release the badge whatever the
+# run asks. GitHub decides that badge when the draft is published, from the
+# publisher's checkbox rather than from the draft, so a run that holds the badge
+# back marks the draft's notes and release-published.yaml applies the mark at
+# publication.
+#
+# The pinned pixelflux and pcmflux come from the release each project cut for
+# that version, so a release needs nothing of them on PyPI: the smoke test, the
+# images, the packages and the AppImages all install the wheels those projects
+# published. `capture_stack: pypi` resolves them from PyPI instead, which is
+# what proves the path a user installing the wheel from there takes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag without the leading v (e.g. 1.2.3 or 2.0.0rc0)
+        type: string
+        required: true
+      latest:
+        description: Designate this release as the latest (floating `latest` image tags and the release badge); auto does so for a release and not for a pre-release
+        type: choice
+        options:
+          - auto
+          - always
+          - never
+        default: auto
+      capture_stack:
+        description: Where the pinned pixelflux and pcmflux come from
+        type: choice
+        options:
+          - releases
+          - pypi
+        default: releases
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release inputs
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
+      latest: ${{ steps.ver.outputs.latest }}
+      make_latest: ${{ steps.ver.outputs.make_latest }}
+    steps:
+      - id: ver
+        env:
+          TAG: ${{ inputs.tag }}
+          LATEST: ${{ inputs.latest }}
+        run: |
+          set -e
+          ver="${TAG#v}"
+          # The tag becomes the wheel version, so it is PEP 440: X.Y.Z with an
+          # optional pre-release, post-release, or dev suffix
+          echo "${ver}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.post[0-9]+|\.dev[0-9]+)?$' \
+            || { echo "tag must be a PEP 440 version (e.g. 1.2.3 or 2.0.0rc0)" >&2; exit 1; }
+          # A pre-release is marked as such on the GitHub release
+          case "${ver}" in
+            *[ab]*|*rc*|*dev*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          # A release is designated as the latest and a pre-release is not,
+          # unless the run says otherwise; the floating `latest` image tags
+          # follow that, and so does the "Latest" badge, except that GitHub
+          # gives no pre-release the badge
+          case "${LATEST:-auto}" in
+            always) latest=true ;;
+            never) latest=false ;;
+            *) if [ "${prerelease}" = "true" ]; then latest=false; else latest=true; fi ;;
+          esac
+          make_latest="${latest}"
+          if [ "${prerelease}" = "true" ]; then make_latest=false; fi
+          {
+            echo "version=${ver}"
+            echo "prerelease=${prerelease}"
+            echo "latest=${latest}"
+            echo "make_latest=${make_latest}"
+          } >> "${GITHUB_OUTPUT}"
+
+  wheel:
+    name: Build wheel
+    needs: validate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-wheel.yaml
+    with:
+      package_version: ${{ needs.validate.outputs.version }}
+
+  capture-stack:
+    name: Capture stack (pinned releases)
+    needs: validate
+    # The wheels pixelflux and pcmflux released for the pinned versions, which
+    # everything below installs. A run resolving them from PyPI skips this.
+    if: ${{ inputs.capture_stack != 'pypi' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-pixelflux-pcmflux-wheels.yaml
+    with:
+      pinned: true
+
+  wheel-smoke:
+    name: Smoke test the wheel
+    needs: [validate, wheel, capture-stack]
+    if: >-
+      ${{ !cancelled() && needs.wheel.result == 'success'
+          && contains(fromJSON('["success", "skipped"]'), needs.capture-stack.result) }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/smoke-wheel.yaml
+    with:
+      # What the smoke test proves installable is what the release ships: the
+      # capture stack this run fetched, or PyPI's copy of the same versions. A
+      # pin that is published in neither place fails here, which is the release
+      # being cut too early.
+      wheels_ready: ${{ inputs.capture_stack != 'pypi' }}
+      capture_stack_published: ${{ inputs.capture_stack == 'pypi' }}
+
+  images:
+    name: Build and publish multi-arch images
+    needs: [validate, wheel, wheel-smoke]
+    # A called workflow can only narrow the caller's token, so the GHCR push
+    # scope has to be granted here
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/images.yaml
+    with:
+      tag_prefix: v${{ needs.validate.outputs.version }}
+      floating_tags: ${{ needs.validate.outputs.latest == 'true' }}
+      wheel_artifact: selkies-wheel
+      capture_stack_published: ${{ inputs.capture_stack == 'pypi' }}
+
+  packages:
+    name: Build native packages
+    needs: [validate, wheel, wheel-smoke]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/packages.yaml
+    with:
+      package_version: ${{ needs.validate.outputs.version }}
+      wheel_artifact: selkies-wheel
+      capture_stack_published: ${{ inputs.capture_stack == 'pypi' }}
+
+  draft-release:
+    name: Assemble draft release
+    needs: [validate, wheel, wheel-smoke, images, packages]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: "*"
+          path: release-artifacts/
+          merge-multiple: true
+      - name: Collect release files
+        run: |
+          set -e
+          mkdir -p release
+          # Drop the empty image-digest placeholder files (64-hex filenames);
+          # they only exist for the multi-arch manifest merge
+          find release-artifacts -type f -regextype posix-extended -regex '.*/[0-9a-f]{64}' -delete
+          # The capture stack rides inside the images and packages; its wheels
+          # stay on the pixelflux and pcmflux releases this run took them from
+          find release-artifacts -type f \( -name 'pixelflux-*.whl' -o -name 'pcmflux-*.whl' \) -delete
+          # Artifacts of the run rather than of the release: the build record
+          # docker/build-push-action uploads per image, and the conda package
+          # the AppImage is assembled from
+          find release-artifacts -type f \( -name '*.dockerbuild' -o -name '*.conda' \) -delete
+          find release-artifacts -type f -exec mv {} release/ \;
+          ls -la release/
+      # A release held off the badge carries the marker release-published.yaml
+      # reads, ahead of the generated notes, where it renders as nothing
+      - name: Create draft release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.validate.outputs.version }}
+          name: v${{ needs.validate.outputs.version }}
+          draft: true
+          prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.validate.outputs.make_latest }}
+          body: "${{ needs.validate.outputs.make_latest == 'false' && '<!-- selkies-release: latest=false -->' || '' }}"
+          generate_release_notes: true
+          files: release/*

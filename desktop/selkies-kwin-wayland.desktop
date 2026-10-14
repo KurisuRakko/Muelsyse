@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Selkies KWin Wayland host capture
+# KWin 按客户端进程的 canonical Exec 反查权限；使用专用 Python ELF 副本，
+# 不把通用 /usr/bin/python3.13 授予接口权限。
+Exec=/home/rakko/.local/libexec/selkies-python3.13 -m selkies
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1,org_kde_kwin_fake_input

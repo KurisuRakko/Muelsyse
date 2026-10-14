@@ -1,0 +1,329 @@
+---
+title: Development and Contributions
+description: Build Selkies locally, customize a container, follow the style guides, and run the tests.
+---
+
+**Go to [Knowledge Base](#knowledge-base) for information on customization.**
+
+**We are in need of maintainers and community contributors. Please consider stepping up, as we can never have too much help!**
+
+This project was meant to be built upon community contributions from people without any prior media networking experience.
+
+The project is built almost entirely in Python, with the performance-critical media paths isolated in small, self-contained Rust extensions (`pixelflux` and `pcmflux`). This keeps the orchestration code approachable even without prior experience in multimedia application development, making this project a perfect starting point for anyone who wants to get started.
+
+Please return your developments with a [Pull Request](https://github.com/selkies-project/selkies/pulls) if you made modifications to the code or added new features, especially if you use this project commercially (as per MPL-2.0 license obligations). We will be happy to help or consult if you are stuck.
+
+**NOTE: this project is licensed under the [Mozilla Public License, version 2.0](https://www.mozilla.org/en-US/MPL/2.0/FAQ/), which obliges to share modified code files licensed by MPL-2.0 when distributed externally, but does not apply for any larger work outside this project, which might be open-source or proprietary under any license of choice. Externally originated components outside this project may contain works licensed over more restrictive copyleft/proprietary licenses, as well as other terms of intellectual property, including but not limited to patents, which users or developers are obliged to adhere to.**
+
+Our license prevents proprietary entities from engulfing our code without providing anything back, unlike the Apache License, but does not impede any larger proprietary work embedding our code, unlike the GNU GPL/LGPL/AGPL. Either way, we strongly encourage proprietary entities to provide back your developments in terms of pull requests directly into our code repository.
+
+As the relatively permissive license compared to similar projects is for the benefit of the community, non-profit or profit, please do not take advantage of it. If improvements are not merged into this code repository, it will ultimately lead to the project becoming unsustainable. We need your help to continue maintaining performance and quality, as well as staying competent compared to proprietary applications. We want commercial research and development to thrive together with Selkies.
+
+## Contributions
+
+Please join our [Discord](https://discord.gg/wDNGDeSW5F) server, then start out with the [Issues](https://github.com/selkies-project/selkies/issues) to see if new enhancements that you can make or things that you want solved have been already raised.
+
+**No programming experience:** You can still be a tester or a community helper/moderator at [Discord](https://discord.gg/wDNGDeSW5F)! Do you see anything that feels uncomfortable compared to other projects? Raise an issue and suggest various improvements including to the documentation. Have you used OBS, FFmpeg, or any other live streaming/video editing software before? You can suggest optimized parameters for the video encoders from your experiences. You can experiment with various encoder and streaming parameters, which are exposed in a very accessible way in [`settings.py`](https://github.com/selkies-project/selkies/tree/main/src/selkies/settings.py) (the command-line and environment settings listed in the [Settings Reference](settings.md)) and applied in [`media_pipeline.py`](https://github.com/selkies-project/selkies/tree/main/src/selkies/media_pipeline.py), improving streaming performance.
+
+**Some Python or HTML/JavaScript frontend experience:** Our codebase and web interface always has room for improvement. Consider helping out on various issues or cleaning up the code otherwise.
+
+**Linux X11/Wayland/Container/Conda experience:** Please report issues with the capture interface and provide improvements for our reference containers, the AppImage, and the `noarch` conda package that every release builds from [`infra/appimage/recipe.yaml`](https://github.com/selkies-project/selkies/tree/main/infra/appimage/recipe.yaml). `pixelflux`, `pcmflux`, `pulsectl-asyncio`, and `aitop` have no conda-forge feedstocks yet; contributing and maintaining them would let Selkies install from conda alone. A protocol and interface can never be great without a great environment it runs in. If you want to bring Selkies to MacOSX or Windows, check our issues!
+
+**C/Rust experience:** Selkies delegates its media encoding to the [`pixelflux`](https://github.com/selkies-project/pixelflux) (screen capture with H.264/JPEG encoding) and [`pcmflux`](https://github.com/selkies-project/pcmflux) (PulseAudio capture with Opus encoding) Rust extensions, whose crate APIs are published at <https://pixelflux.selkies.io> and <https://pcmflux.selkies.io>, and its opt-in WebRTC transport to a vendored fork of `aiortc`. We need you to fix bugs and implement new capabilities in these components or any other upstream dependencies. This will not only benefit Selkies but also help the broader communities around those projects.
+
+**Any type of multimedia networking experience:** While relevant experience is not necessary to contribute, we still feel great to have you as our companions. Please consider stepping up as a maintainer in addition to contributing! Development for commercial purposes are always fine as well as (our weak copyleft) license terms are complied with. Shape Selkies so that it fits your project as a first-class citizen, while keeping it accessible to many other people.
+
+**WebSocket/WebRTC developers or Chromium/Firefox/Safari multimedia contributors:** We always need you, but you are generally very busy people. Even so, you can always provide directions on topics, ideas, specifications, or technologies that we have missed, so that other people including us can implement them. In many occasions, a single paragraph from experts are equal to hundreds of hours of work.
+
+**Funding to improve this project:** If you want new features or improvements but if you are not a developer or lack enough time, please consider offering bounties by contacting us. If you want new features that require upstream work in our dependencies (such as `pixelflux`, `pcmflux`, or `aiortc`), we may need to fund developers capable of implementing them so they can be brought into Selkies as well. Such issues are tagged as requiring upstream development. Even for features or improvements that are ready to be implemented, crowdfunding bounties motivate developers to solve them faster.
+
+Regardless of your experience level, there is always something that you could help. Our code structure enables you to focus on parts of the code that you know best without necessarily understanding the rest.
+
+When contributing, please follow the overall style of the code, and the names of all variables, classes, or functions should be unambiguous and as less generic/confusing as possible.
+
+## Influenced Projects
+
+Currently in collaboration and received influences from: <https://github.com/Xpra-org/xpra>, <https://github.com/m1k1o/neko>
+
+Provided heavy influences to other projects: <https://github.com/nestriness/nestri>, <https://github.com/Steam-Headless/docker-steam-headless>, <https://github.com/ai-dock>
+
+## Contributors
+
+Contact information for contributors currently available for paid consulting tasks is available by request in [Discord](https://discord.gg/wDNGDeSW5F).
+
+### Maintainers
+
+These people make structural decisions for this project and press the `Merge Pull Request` button.
+
+[Seungmin Kim](https://github.com/ehfd): Co-Owner, Head Maintainer (Apr 2022 -), Academia Representative (Yonsei University College of Medicine, San Diego Supercomputer Center)
+
+[Ryan Kuba](https://github.com/thelamer): Co-Owner, Head Maintainer (Jun 2025 -), [LinuxServer.io](https://www.linuxserver.io) Representative.
+
+[Dan Isla](https://github.com/danisla): Project Founder, Co-Owner, Industry Representative (ex-Google, ex-NASA, ex-itopia)
+
+[PMohanJ](https://github.com/PMohanJ): Contributed new features for the X11 input protocol as well as providing various fixes for the project overall and providing various means of analysis, **currently available for paid consulting tasks in tandem with senior maintainers**
+
+### Code Contributors
+
+[Sam Williams](https://github.com/ayunami2000): Provided various fixes for the WebRTC HTML5 web interface, as well as providing various means of analysis, **currently available for paid consulting tasks in tandem with senior maintainers**
+
+[Kristian Ollikainen](https://github.com/DatCaptainHorse): Professional WebRTC and JavaScript frontend engineer, contributed various insights to the WebRTC and web components
+
+### Past Maintainers
+
+[Jan Van Bruggen](https://github.com/kili-ilo): Project Co-Founder, ex-Google, ex-NASA, ex-itopia, current Verily
+
+[Carlos Ruiz](https://github.com/cruizba): [OpenVidu](https://openvidu.io) Team, provided various proposals for fixing the X11 input protocol
+
+[Reisbel Machado](https://github.com/reisbel): itopia
+
+# Knowledge Base
+
+This section is a knowledge base for code contributions and development.
+
+## Communities
+
+- Selkies Discord: <https://discord.gg/wDNGDeSW5F>
+
+- Selkies Matrix Space (Connect with United States HPC Academics, needs Matrix Account from <https://app.element.io>): <https://matrix.to/#/#ue4research:matrix.nrp-nautilus.io>
+
+- Real-Time Streaming Discord (General WebRTC Advice): <https://discord.gg/KFS32mYXPr>
+
+
+## Resources
+
+- **Our [Documentation](README.md) and [Issues](https://github.com/selkies-project/selkies/issues)/[Pull Requests](https://github.com/selkies-project/selkies/pulls)** (including closed Issues/Pull Requests) and <https://github.com/m1k1o/neko/issues/371>
+
+- Upstream projects behind the current media stack: [`aiortc`](https://github.com/aiortc/aiortc) (the WebRTC transport is a vendored fork), [`pixelflux`](https://github.com/selkies-project/pixelflux) (screen capture with H.264/JPEG encoding), and [`pcmflux`](https://github.com/selkies-project/pcmflux) (PulseAudio capture with Opus encoding)
+
+- The Rust references those two generate: <https://pixelflux.selkies.io> and <https://pcmflux.selkies.io>
+
+- WebRTC for the Curious: <https://webrtcforthecurious.com>
+
+- WebRTC Official Google Groups: <https://groups.google.com/g/discuss-webrtc>
+
+- Mozilla MDN: <https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API>
+
+- WebRTC Hacks: <https://webrtchacks.com>
+
+## Local Builds
+
+[`docker-compose.yml`](https://github.com/selkies-project/selkies/tree/main/docker-compose.yml) builds and runs everything this repository produces, with Compose V2:
+
+```bash
+docker compose build dist                    # the wheel, web client included
+docker compose build base desktop            # the session, then the desktop on top of it
+docker compose up desktop                    # the Desktop Container on http://localhost:8080
+docker compose --profile gpu up desktop-gpu  # the same container with a GPU attached
+```
+
+Each service names the `Dockerfile` that builds it, and those files are also the reference build procedure for a host without Docker®: the commands run in a shell as they stand.
+
+`desktop` bind-mounts the checkout at `/opt/selkies-src` and sets `SELKIES_DEV_SOURCE` to it, so the server runs from the tree and a change to it takes effect on a restart rather than a rebuild. `SELKIES_DEV_SOURCE` works on any image, including a published one:
+
+```bash
+docker run --rm -it --shm-size=2g -p 8080:8080 \
+  -v "$PWD:/opt/selkies-src" -e SELKIES_DEV_SOURCE=/opt/selkies-src \
+  ghcr.io/selkies-project/selkies/desktop:main-ubuntu26.04
+```
+
+The web client is a build product and a fresh checkout has none, so the image's own bundle is linked in at the (gitignored) path it is served from; running `scripts/ci/build-web.sh` locally builds a real one into the tree. The base image, the streaming mode, the port, and the TURN credentials come from the environment (`DISTRIB_IMAGE`, `DISTRIB_RELEASE`, `SELKIES_MODE`, `SELKIES_PORT`, `SELKIES_TURN_*`); a `.env` file next to the Compose file is the usual place for them. The images build with BuildKit (`RUN --mount`); the legacy builder cannot build them. To run a wheel built from this tree instead of the latest PyPI release, copy it out of the `selkies-py-build` image into `addons/base/wheels/` before building.
+
+## Documentation
+
+The pages under [`docs/`](https://github.com/selkies-project/selkies/tree/main/docs) are plain Markdown and are what <https://docs.selkies.io> publishes. Editing one through GitHub's web editor is enough to change the site: either the pencil icon in the repository, or the **Edit on GitHub** button beside every page, opens the file it was built from.
+
+A page begins with front matter naming it:
+
+```yaml
+---
+title: Getting Started
+description: One sentence, shown under the title and in search results.
+---
+```
+
+[`docs/meta.json`](https://github.com/selkies-project/selkies/tree/main/docs/meta.json) lists the pages in sidebar order, and a new page has to be added to it to appear there.
+
+Links between pages are written the way GitHub resolves them (`start.md`, or `component.md#encoders`) and are rewritten to site URLs during the build. Images live in `docs/assets` and are referenced relative to the file.
+
+### Logo Assets
+
+Every image in the repository is the Selkies logo, and all of them are generated from two hand-authored sources: `docs/assets/logo/selkies.svg` (the mark) and `wordmark.svg` (the lettering). Everything else is composed from those — the two lockups that set the mark beside or above the wordmark, the favicons, the PWA and touch icons, the dashboards' copies of the mark, and the PNG lockups. Edit a source and regenerate; do not edit the outputs:
+
+```bash
+python3 scripts/build-logo-assets.py           # rewrite every generated image
+python3 scripts/build-logo-assets.py --check   # report which ones are stale
+```
+
+It needs `rsvg-convert` (librsvg) and Pillow. Only layout lives in the script: the canvas each lockup uses and the transform it places the mark and the wordmark at, so the mark can never end up embedded twice with two different gradients. The app icons are composed the same way — the mark on an opaque white disc, so a launcher that masks icons to a circle crops nothing.
+
+Previewing the site needs nothing but [Node.js](https://nodejs.org):
+
+```bash
+cd website
+npm install
+npm run dev          # http://localhost:3000
+```
+
+`npm run build` writes the site to `website/out`, which is what the `Docs` workflow uploads, and `npm run check-links` fails on any link or anchor in that output that does not resolve.
+
+### Developer Reference
+
+The Developer Reference is generated from the docblocks in the code, never written by hand and never committed: `docs/reference` is gitignored, and `npm run dev` and `npm run build` generate it fresh, so the published site always matches the source that built it. `npm run generate:api` regenerates it on its own, which is also how a docblock or signature change is picked up while the dev server is running.
+
+The Python modules of `src/selkies` come from their Google-style docstrings and type hints through [fumadocs-python](https://www.fumadocs.dev/docs/integrations/python). That half needs `python3`: the generator bootstraps a private venv in `website/.venv-docs` on first use (delete that directory to rebuild it, e.g. after upgrading the `fumadocs-python` npm package).
+
+The web client core and the two dashboards come from their JSDoc blocks and type annotations through [TypeDoc](https://typedoc.org), which reads the plain JavaScript of `addons/selkies-web-core` and `addons/selkies-dashboard` through the TypeScript compiler's JSDoc support and the TypeScript of `addons/selkies-dashboard-wish` natively, one section per addon. That half needs nothing beyond the site's own `npm install`: the addons' third-party types are not installed and render as `any`, and type errors never fail the build. Every function that carries a docblock appears, exported or not — the streaming cores keep their machinery as closures inside one exported function, and the dashboards keep their handlers inside their components — so the reference covers what the docblocks cover, as it does for Python. `website/scripts/generate-web-docs.mjs` lists what is excluded (translation tables, the wish dashboard's vendored shadcn/ui primitives, the built core copied into the dashboard at build time), and `_`-prefixed members are private and left out.
+
+The comment conventions each language follows are in [`AGENTS.md`](https://github.com/selkies-project/selkies/tree/main/AGENTS.md).
+
+### Settings Reference
+
+[`docs/settings.md`](settings.md) is rendered from the setting definitions in `src/selkies/settings.py` by `scripts/generate-settings-doc.py`, which reads the definition list statically and needs nothing installed. Unlike the Developer Reference it is committed, so it reads on GitHub as well: after changing a setting, run `python3 scripts/generate-settings-doc.py` and commit the page with the change. The `settings-doc` pre-commit hook (and the CI lint gate, through it) runs the script with `--check` and fails when the page is stale.
+
+## Container Customization
+
+The reference container images (the [Base Container](https://github.com/selkies-project/selkies/tree/main/addons/base), the [Desktop Container](https://github.com/selkies-project/selkies/tree/main/addons/desktop) built on it, and the LXQt desktop images built by CI) use the [s6 supervision suite](https://skarnet.org/software/s6/) as their service supervisor, installed from the distribution's package registry (`s6` package): `s6-svscan /etc/service` starts one `s6-supervise` per service directory — the X11 display server (or the headless Wayland compositor), the desktop session, the audio stack (`pipewire`/`wireplumber`/`pipewire-pulse`), `dbus`, and `selkies`, restarting any that crash. Services are controlled with `s6-svc` and inspected with `s6-svstat`, the `supervisord`/`supervisorctl` equivalents, without any Python dependency (`s6-overlay` is deliberately NOT used: it insists on being PID 1, while plain `s6-svscan` works both as PID 1 and below any foreign init or launcher).
+
+**If you want to change the image behavior, use the original container as a base image and only replace the entrypoint script(s) and/or the s6 service files. This will keep you up to date with the latest updates. Use persistent container tags (such as `v1.0.0-ubuntu26.04` for the [Desktop Container](component.md#desktop-container)) to preserve a specific container build.**
+
+Start with the below sample `Dockerfile` example and place your modified `container-entrypoint.sh` and s6 service files within the same directory or Git repository (switch the `FROM` line to `ghcr.io/selkies-project/selkies/desktop:main-${DISTRIB_FLAVOR}` for the [Desktop Container](component.md#desktop-container), and `ghcr.io/selkies-project/selkies-glx-desktop:26.04` or `ghcr.io/selkies-project/selkies-egl-desktop:26.04` for the desktop containers):
+
+```dockerfile
+ARG DISTRIB_FLAVOR=ubuntu26.04
+FROM ghcr.io/selkies-project/selkies/desktop:main-${DISTRIB_FLAVOR}
+ARG DISTRIB_FLAVOR
+
+USER 0
+SHELL ["/bin/sh", "-c"]
+
+# Replace changed files
+# Copy scripts and service definitions used to start the container with `--chown=1000:1000`
+#COPY --chown=1000:1000 container-entrypoint.sh /etc/container-entrypoint.sh
+#RUN chmod -f 755 /etc/container-entrypoint.sh
+#COPY --chown=1000:1000 selkies-entrypoint.sh /etc/selkies-entrypoint.sh
+#RUN chmod -f 755 /etc/selkies-entrypoint.sh
+# Replace or add s6 services (one directory per service under /etc/service)
+#COPY --chown=1000:1000 services/ /etc/service/
+#RUN find /etc/service -name run -exec chmod -f 755 {} +
+
+USER 1000
+ENV SHELL=/bin/bash
+ENV USER=ubuntu
+ENV HOME=/home/ubuntu
+WORKDIR /home/ubuntu
+
+EXPOSE 8080
+
+ENTRYPOINT ["/etc/container-entrypoint.sh"]
+```
+
+A layer that installs packages needs one more pair. The images are rootless -- every layer runs as uid 1000 through fakeroot -- while their setuid and setgid files (`mount`, `su`, `sudo`, `fusermount3`, the PAM helpers) belong to root, and dpkg replaces a file by hardlinking the old one aside first, which the kernel denies uid 1000 on a setuid file it does not own. An archive update to one of those packages therefore fails the layer that takes it, so bracket the package work with the pair the image ships for it:
+
+```dockerfile
+USER 0
+SHELL ["/bin/sh", "-c"]
+RUN selkies-privileged-files release
+
+USER 1000
+SHELL ["/usr/bin/fakeroot", "--", "/bin/sh", "-c"]
+RUN apt-get update && apt-get install --no-install-recommends -y <packages>
+
+USER 0
+SHELL ["/bin/sh", "-c"]
+RUN selkies-privileged-files restore
+USER 1000
+```
+
+`restore` gives back every owner and bit `release` recorded. A setuid or setgid helper the new packages bring is in no record and needs its own `chown root:root` and `chmod` beside it, since the kernel honours neither bit on a file uid 1000 owns. Inside a running session the same work goes through `sudo-root selkies-privileged-files run apt-get install -y <packages>`: `sudo` is itself one of the files a release hands over, so one root process holds both ends and runs the command as the session user under fakeroot, the way an in-session `sudo apt-get` does.
+
+The entrypoint script of the base images launches `s6-svscan /etc/service` itself, so it does not need to be PID 1 and the image keeps working when another init or launcher is injected above it.
+
+## Container Guide
+
+The [`docker-selkies-egl-desktop`](https://github.com/selkies-project/docker-selkies-egl-desktop) and [`docker-selkies-glx-desktop`](https://github.com/selkies-project/docker-selkies-glx-desktop) repositories (the Desktop Containers here) are KDE Plasma desktops built `FROM` the [Base Container](component.md#desktop-container) the way `addons/desktop` builds the LXQt one: the base's `container-entrypoint.sh`, `selkies` service and every other service are used as they are, and each repository adds only its desktop -- packages, session defaults, the browsers, the proot-apps runner -- and the s6 services its session needs, one `run` script each under `services/`. Neither carries an entrypoint, a supervisor configuration or a web server of its own: the base launches `s6-svscan /etc/service`, and Selkies serves the web client and every endpoint on its single port.
+
+The two differ in what the desktop draws on. The EGL image keeps the base's display servers, Plasma on the framebuffer X server by default and natively on a nested `kwin_wayland` under `SELKIES_WAYLAND=true`, and rebuilds `kwin-wayland` from the distribution source so a second display can be a kwin virtual output (`patches/`, `selkies-kwin`). The GLX image replaces the base's framebuffer server with an X.Org server on the GPU (`services/xorg`, configured at start by `selkies-xorg-config` for NVIDIA's driver or the modesetting driver) and is X11 only. Both build on the Ubuntu 26.04 base alone and publish `26.04`, a timestamped `26.04-<build>` and `latest` tags, for amd64 and arm64.
+
+**A change to a shared component is two Pull Requests, one per Desktop Container; a change to what the base provides is one here, and the Desktop Containers pick it up at their next build.** What is shared, and how closely:
+
+| Component | Shared between | When updating |
+| --- | --- | --- |
+| `LICENSE`, the Plasma package set, the session defaults under `/etc/xdg`, the browsers and proot-apps layers, `services/dbus-session` | both Desktop Containers | identical; copy between them |
+| `services/plasma` | both Desktop Containers | identical but for the Wayland branch, which only the EGL image has |
+| The browsers and proot-apps layers, the privileged-file bracket | both Desktop Containers and `addons/desktop` here | identical, with the helper scripts fetched from this repository by `SELKIES_REF` rather than copied |
+| `patches/`, `selkies-kwin`, the kwin rebuild stage | EGL image only | assess against the kwin the archive ships |
+| `services/xorg`, `selkies-xorg-config` | GLX image only | assess by hand |
+| `README.md`, `docker-compose.yml`, `egl.yml`/`xgl.yml`, the publish workflow | both Desktop Containers | similar but not identical; assess by hand |
+
+## Style Guide
+
+- Shell scripts and Dockerfiles should use POSIX `sh` syntax as much as possible. Despite the shell scripts being run in `bash`, avoid using syntax only available in `bash` (such as `[[ ]]`), `zsh`, or other types of shells, unless absolutely needed. If non-POSIX syntax is used, prefer using `bash` syntax, but only if there are no equivalent POSIX alternatives.
+
+- For Python, [Ruff](https://github.com/astral-sh/ruff) with Black formatting or [Black](https://github.com/psf/black) formatting are recommended. For JavaScript, HTML, CSS, Markdown, YAML, and other files, [Prettier](https://github.com/prettier/prettier) formatting is recommended. For code that is not already formatted in these formats, use the formatters with your Pull Requests if possible.
+
+- There should be no empty lines with whitespaces, or line endings with whitespaces. Moreover, there should be a line break at the end of each code file unless the specific code file format should not have one. If there is not, it is okay, but include the line break with your Pull Requests if possible.
+
+- Try using [`codespell`](https://github.com/codespell-project/codespell) or any other code spelling checker including the Visual Studio Code [Code Spell Checker](https://marketplace.visualstudio.com/items?itemName=streetsidesoftware.code-spell-checker), that can check spelling errors in the codebase before finalizing your pull request. Note that some fixes may be false positives, so please check the fixes manually (most notable false positives include `/dev/dri/renderD`).
+
+## Code Guide
+
+- **You need to understand the whole codebase fully before contributing developments.** When editing certain parts of the codebase, they are very likely to interact with other components in a very different location, or the same content needs to be edited in multiple different locations. Therefore, Commits or Pull Requests are very likely to corrupt the repository **UNLESS** you use rigorous search capabilities across the whole codebase as often as possible. Check previous commits as a starting point for the files that tend to be edited together.
+
+- Because of this, use the Visual Studio Code (or any other IDE of choice) **Search and Replace** capabilities rigorously (especially with fine-tuning through case-sensitive search and regular expressions). However, the replacement capability, without adequate care, may replace totally unrelated code. Take great care while using this capability, and reviewers must take special attention to detect potentially breaking typos which may arise from Search and Replace.
+
+- **Write or edit code in relevant files and reference them so that the code style is kept consistent.** For instance, many handler methods that start with `on_` are initially unset, then set and referenced in other components or classes during initialization. If you are implementing a new capability on certain methods or handlers that use methods starting with `on_` frequently, you have to create new `on_` methods as well to handle your capability. This assists with keeping the code highly readable, and putting methods or functions in the wrong files will harm the consistency of the code style. **If you are starting to feel that the location you are writing code in does not blend properly into adjacent code, you are probably writing it in the wrong place!**
+
+- For example, assume that we are writing a new component that receives WebRTC Metrics from the web interface and writes them into multiple CSV files in the host ([#141](https://github.com/selkies-project/selkies/pull/141)). Because a data-channel (WebRTC) or WebSocket message carries the metrics, receiving them is handled in [`input_handler.py`](https://github.com/selkies-project/selkies/tree/main/src/selkies/input_handler.py). But this does not mean that everything should be implemented in this file. Instead, they should be implemented in the `Metrics` class of [`webrtc_utils.py`](https://github.com/selkies-project/selkies/tree/main/src/selkies/webrtc_utils.py), and be initialized in [`webrtc_mode.py`](https://github.com/selkies-project/selkies/tree/main/src/selkies/webrtc_mode.py). This way, relevant code stays in appropriate files and is initialized only when the capabilities are needed.
+
+
+## Tests
+
+[`tests/`](https://github.com/selkies-project/selkies/tree/main/tests) holds the suites, grouped into tiers by what they need to run. Each one is a standalone program printing a `PASS`/`FAIL` line per check, and `pytest` runs the same suites through a marker per tier:
+
+```bash
+pytest tests -m unit                    # the source tree only
+pytest tests -m integration             # a display, PulseAudio, an installed selkies
+pytest tests -m e2e                     # the above plus Playwright browsers
+python3 tests/e2e/test_matrix.py wr-wl  # or one suite, one block, on its own
+```
+
+The `integration` tier drives the server over a raw WebSocket or the kernel gamepad backend; the `e2e` tier drives real browsers across `{websockets, webrtc} x {X11, Wayland}`, which is where the transport and backend parity is actually held to account. The `perf` and `soak` tiers run on request. [`tests/README.md`](https://github.com/selkies-project/selkies/tree/main/tests/README.md) documents the environment variables, the `/dev/uinput` emulator that lets the kernel gamepad path run on a machine without one, and the packaging simulator that exercises `infra/packaging/*.sh` with no container runtime.
+
+## Agentic Development
+
+Much of this tree is written and reviewed with coding agents, and the repository is laid out so an agent validates its own work rather than describes it. [`AGENTS.md`](https://github.com/selkies-project/selkies/tree/main/AGENTS.md) (`CLAUDE.md` links to it) is the instruction file every agent reads first: the comment and documentation conventions, the engineering priorities, and the cross-cutting invariants no single module reveals. It is the one file an agent cannot derive from the code, so keep it current as you change what it describes. [pixelflux](https://github.com/selkies-project/pixelflux) and [pcmflux](https://github.com/selkies-project/pcmflux) carry their own, and a change in one repository often belongs in another, so give an agent all three checkouts.
+
+An agent works in a sandbox it may break, never in the session it is shown on. The devcontainers under [`.devcontainer`](https://github.com/selkies-project/selkies/tree/main/.devcontainer) are that sandbox ready-made: `postcreate.sh` builds the web client, installs the package editable with the pinned capture stack and the test extras, then the Playwright engines, the OpenH264 plugin Firefox negotiates H.264 with, and the C helpers under `tests/tools`. On any other host the same comes from `pip install -e .[test]`, `python3 -m playwright install --with-deps chromium firefox webkit`, `sh tests/tools/fetch-openh264.sh`, `make -C tests/tools` and the packages the `suites` job of [`tests.yaml`](https://github.com/selkies-project/selkies/tree/main/.github/workflows/tests.yaml) installs; Miniforge serves a host whose package manager is closed, with the system `libgbm.so` kept for GBM on NVIDIA. [`scripts/ci/test-stack.sh`](https://github.com/selkies-project/selkies/tree/main/scripts/ci/test-stack.sh) then starts what the suites stream from, an `Xvfb` on `E2E_DISPLAY` (`:99` unless set) with the canvas the containers use and a PulseAudio null sink, leaving both alone when they are up already; CI starts its display with the same script. That display is never the one a desktop runs on, because the suites inject input and resize the root window, which is why `E2E_DISPLAY` is never taken from `DISPLAY`. The Wayland suites nest their own `labwc`, patched as [`addons/base/build-labwc.sh`](https://github.com/selkies-project/selkies/tree/main/addons/base/build-labwc.sh) builds it; a stock one makes them skip, and CI counts a skip as a failure (`tests/tools/assert_no_skips.py`). GPU paths need the hardware: pixelflux's `cargo test gpu_ -- --ignored --nocapture --test-threads=1` on a machine with the NVIDIA driver, and a render node for its dmabuf checks. A change to pixelflux or pcmflux reaches this sandbox as a wheel (`pip wheel . --no-deps` in that checkout) installed into the same environment, and the suites here then drive it over both transports on X11 and Wayland.
+
+The loop an agent runs is the one CI runs, from the cheap end: `pre-commit run --all-files` for the lint gate, `pytest tests -m unit` on every change, then the `integration` tier and the `e2e` blocks the change touches (`python3 tests/e2e/test_matrix.py wr-wl` and its siblings, each a standalone program), and a measurement wherever a claim is a number, since the suites hold behavior and the numbers are what the priority order in `AGENTS.md` is decided on: a latency, a frame rate, a bitrate, before and after. A parity change runs on both sides it claims to unify, X11 and Wayland, WebSockets and WebRTC, the default and the wish dashboards. A failure the agent cannot reproduce is narrowed until it is fixed or precisely described, never waved through, and a pre-existing defect it finds is in scope.
+
+What an agent hands back is what a reviewer can check: one commit per concern under a one-line `type: Sentence` subject, the contributor's own identity on it, no generated bundles or build artifacts, the translations updated with every user-facing string, docblocks describing the tree as it now is rather than the change, and the suites and measurements it ran named in the pull request.
+
+## Continuous Integration
+
+Every workflow lives under [`.github/workflows`](https://github.com/selkies-project/selkies/tree/main/.github/workflows):
+
+- `ci.yaml` orchestrates pushes to `main` and every pull request. It lints (Ruff, codespell, actionlint, and ESLint plus TypeScript over the dashboards), byte-compiles the package on Python 3.9 through 3.14, then builds the wheel once and hands that single artifact to the image and package builds.
+- `build-wheel.yaml` bundles the web client with [`scripts/ci/build-web.sh`](https://github.com/selkies-project/selkies/tree/main/scripts/ci/build-web.sh) and builds the wheel, which every image and package build starts from. `smoke-wheel.yaml` installs it into a clean virtualenv on the newest and the oldest supported interpreter and runs the console script, against the capture stack the run resolved or, when a release asks for it, PyPI's copy of the same versions.
+- `build-pixelflux-pcmflux-wheels.yaml` puts pixelflux and pcmflux into the run's artifacts, so images, packages, AppImages, and the suites ride wheels the run holds rather than an index. Its locate job names one release of each project -- the per-commit pre-release of their `main` HEAD, or, for a release of this repository, the release carrying the version `pyproject.toml` pins -- and a fetch job downloads it, one job per artifact the build would otherwise produce, so only what no release covers is built here. Everything that needs the capture stack reads those artifacts, so a run resolves it once.
+- `images.yaml` publishes the multi-architecture `base`, `desktop`, `coturn`, and `turn-rest` images to ghcr.io. The base image's own build runs the console script, imports both extension modules and loads the libraries the capture stack opens by name, so an image whose payload cannot start is never pushed; no suite here runs inside an image. Each architecture builds on its own native runner and pushes by digest; a merge job assembles the manifest, so no QEMU is involved. `base` and `desktop` are built in the same job, in that order, so the desktop layer names the base it was just given by digest rather than a tag that does not exist yet. A final job prunes the images no tag points at any more, which is what every push leaves behind when it moves the `main-*` tags onto new manifests.
+- `packages.yaml` builds `.deb`, `.rpm`, `.apk`, `.pkg.tar.zst`, and both AppImages, each inside a container of the target distribution. Every native package carries the Joystick Interposer, which `infra/packaging/interposer.sh` compiles into the package root. Each AppImage is then run by [`scripts/ci/verify-appimage.sh`](https://github.com/selkies-project/selkies/tree/main/scripts/ci/verify-appimage.sh) with the build's AppDir gone: an entry point or a bundled sound server that names the path the conda prefix was installed to still resolves while that tree is there, and works nowhere else.
+- `tests.yaml` runs the suites in [`tests/`](https://github.com/selkies-project/selkies/tree/main/tests). `ci.yaml` calls it for the `unit` and `integration` tiers on every push and pull request, and it runs the browser tier nightly and on demand.
+- `release.yaml` is the maintainer entry point described below, and `release-published.yaml` applies its `latest` choice to the badge once the draft is published; `docs.yaml` publishes this site; `devcontainer-feature.yaml` validates and publishes the devcontainer feature.
+
+Ruff's rule selection lives in `pyproject.toml`, codespell's exceptions in `.codespellrc`, and each dashboard's ESLint rules in its own `eslint.config.js`, so `ruff check`, `codespell`, and [`scripts/ci/lint-web.sh`](https://github.com/selkies-project/selkies/tree/main/scripts/ci/lint-web.sh) from the repository root reproduce the CI lint exactly.
+
+Shell is linted by `shellcheck`, which actionlint runs over every workflow `run:` block and the `unit` tier runs over every script the tree ships. Which findings it reports at that severity differs between releases, so both jobs install the pinned build with [`scripts/ci/install-shellcheck.sh`](https://github.com/selkies-project/selkies/tree/main/scripts/ci/install-shellcheck.sh); run it with a writable directory (`scripts/ci/install-shellcheck.sh ~/.local/bin`) to lint against the same one locally.
+
+The same three run as a pre-commit hook, which is the easier way to stay ahead of the lint gate:
+
+```bash
+pip install pre-commit
+pre-commit install          # once per clone
+pre-commit run --all-files  # or check the whole tree on demand
+```
+
+# Maintainer Documentation
+
+- New releases are published by going to the [Release](https://github.com/selkies-project/selkies/actions/workflows/release.yaml) GitHub Action Workflow, and triggering `workflow_dispatch` by clicking on `Run workflow` with `Branch: main`, and specifying the release tag. The tag is a PEP 440 version without the leading `v`, either a release such as `1.2.3` or a pre-release such as `2.0.0rc0`; a pre-release is marked as one on the GitHub release. The `latest` input decides whether the release is designated as the latest everywhere, the floating `latest` image tags and the "Latest" badge of the published release together: `auto`, the default, designates a release and not a pre-release, `never` holds both back for a hotfix of an older series, and `always` moves the image tags onto a pre-release as well; the badge stays off a pre-release whatever the input says, because GitHub gives it to none. The `capture_stack` input decides where the pinned pixelflux and pcmflux come from: `releases`, the default, takes the wheels each project released for the version `pyproject.toml` pins, so a release can be cut with neither project on PyPI, and `pypi` resolves them from there instead, which is what proves the path a user installing the wheel takes. The pin has to name what exists either way, a pre-release included: pip takes no pre-release for a pin that does not name one, so an rc capture stack is pinned as `pixelflux~=2.2.0rc1`. The draft release for the new proposed release will be generated in the [Releases](https://github.com/selkies-project/selkies/releases) page, only visible to the maintainers. After waiting for the release build to finish, editing the release notes, and publishing the release, the release will be visible as the latest release when the run designated it so; a run that did not leaves an invisible marker in the notes, which the `release-published.yaml` workflow reads at publication to keep the badge where it was. **If the same release is created multiple times because of certain issues, make sure to delete the previous release and the tag before running the [Release](https://github.com/selkies-project/selkies/actions/workflows/release.yaml) GitHub Action Workflow again.**
