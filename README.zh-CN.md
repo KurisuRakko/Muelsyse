@@ -184,5 +184,7 @@ flowchart LR
 
 ## Development
 
+构建、测试与部署命令见 [`docs/development.md`](docs/development.md)。
+
 这个项目是在我主导下、借助 AI 编码助手开发的，每一处改动都经过我审阅和把控，
 而非未经查看直接采纳。

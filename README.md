@@ -224,6 +224,9 @@ Full breakdown in [`LICENSING.md`](LICENSING.md).
 
 ## Development
 
+Build, test and deployment commands are in
+[`docs/development.md`](docs/development.md).
+
 This project was built under my direction with the help of AI coding
 assistants; every change was reviewed and directed by me rather than
 applied unread.

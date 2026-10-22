@@ -137,7 +137,7 @@ else
     printf '         modules-load: %s\n' "$(systemctl is-active systemd-modules-load.service 2>/dev/null)"
     printf '         节点 unit:    %s (%s)\n' "$(systemctl is-active rakko-nvidia-device-nodes.service 2>/dev/null)" \
                                              "$(systemctl show -p ConditionResult --value rakko-nvidia-device-nodes.service 2>/dev/null)"
-    printf '         先重启机器再跑本脚本；若已重启仍如此，见 tasks/gpu-nvenc/007.report.md 的「没把握的点」。\n'
+    printf '         先重启机器再跑本脚本。\n'
     exit 2
 fi
 info "nvidia-smi: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -n1)"
@@ -646,7 +646,7 @@ fi
 # 显存：nvidia-smi 失败时会把错误文本打到 stdout，必须校验格式再显示（005 踩过同类问题）。
 MEM="$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null | head -n1)"
 case "$MEM" in ''|*[!0-9MiaB,idx.\ ]*) MEM="" ;; esac
-info "显存占用: ${MEM:-<读不到>}（P620 共 2 GiB；见 tasks/gpu-nvenc/007.report.md 的显存预算）"
+info "显存占用: ${MEM:-<读不到>}（P620 共 2 GiB）"
 if [ "$QUIET" = 1 ]; then :; else
     info "nvidia-smi pmon 摘要："
     if nvidia-smi -L >/dev/null 2>&1; then
@@ -666,7 +666,7 @@ printf '  PASS=%d  FAIL=%d  WARN=%d  SKIP=%d\n' "$PASS" "$FAIL" "$WARN" "$SKIP"
 if [ "$FAIL" -gt 0 ]; then
     printf '  失败项：\n'
     for i in "${FAILED_ITEMS[@]}"; do printf '    - %s\n' "$i"; done
-    printf '\n  回退：sudo rakko-gpu-mode %s && sudo reboot（详见 tasks/gpu-nvenc/007.report.md）\n' \
+    printf '\n  回退：sudo rakko-gpu-mode %s && sudo reboot\n' \
         "$([ "$MODE" = nvidia ] && echo intel || echo nvidia)"
     exit 1
 fi

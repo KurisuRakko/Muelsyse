@@ -22,3 +22,6 @@ sunshine/input-bridge/test/wl-input-probe
 CMakeFiles/
 CMakeCache.txt
 .claude/
+
+# 本地 Claude Code 设置与 worktree
+.claude/
