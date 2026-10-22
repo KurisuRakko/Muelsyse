@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rakkord-imecaret 的端到端测试：在私有 session bus 上模拟 fcitx-qt5 插件的调用。
+"""muelsyse-imecaret 的端到端测试：在私有 session bus 上模拟 fcitx-qt5 插件的调用。
 
 用法（不会碰真实会话的 bus）:
     dbus-run-session -- python3 scripts/tests/test_imecaret_dbus.py
@@ -16,7 +16,7 @@ import time
 import dbus
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DAEMON = os.path.join(HERE, "..", "rakkord-imecaret.py")
+DAEMON = os.path.join(HERE, "..", "muelsyse-imecaret.py")
 IM = ("org.freedesktop.portal.Fcitx", "/org/freedesktop/portal/inputmethod")
 
 

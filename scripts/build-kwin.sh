@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 从仓库的 kwin/ 与 kwin-adapter/ 构建 KWin，并把产物复制成带版本号的 prefix：
 #   ~/.local/share/remote-desktop/kwin/releases/<时间戳>/bin
-# 生产只跑 releases/ 里的副本（经 current 软链），不再直接从构建树跑——以前的
-# ~/build/kwin-adapter 一重编就会用 POC 源码盖掉双光标修复。
+# 生产只跑 releases/ 里的副本（经 current 软链），不再直接从构建树跑——构建树
+# 一重编就可能用旧源码盖掉双光标修复。
 #
 # 用法：
 #   scripts/build-kwin.sh                 构建 + stage + 验收，不切 current
@@ -10,19 +10,19 @@
 #   scripts/build-kwin.sh --activate TS   只把 current 切到 releases/TS；要重启整个会话才生效
 #   --jobs N                              ninja 并发（默认 3，按 15G 内存的机器定的，内存大可调高）
 #
-# 环境变量：RAKKORD_KWIN_BUILD_DIR 构建树（默认 ~/build/rakkord-kwin）；
-# RAKKORD_RUNTIME_ROOT 产物根（默认 ~/.local/share/remote-desktop/kwin），测试时指到临时目录。
-# ~/.config/rakkord/env 里写的值在环境没给时生效（见 scripts/rakkord-env.sh）。
+# 环境变量：MUELSYSE_KWIN_BUILD_DIR 构建树（默认 ~/build/muelsyse-kwin）；
+# MUELSYSE_RUNTIME_ROOT 产物根（默认 ~/.local/share/remote-desktop/kwin），测试时指到临时目录。
+# ~/.config/muelsyse/env 里写的值在环境没给时生效（见 scripts/muelsyse-env.sh）。
 set -Eeuo pipefail
 # 只读 git 查询不刷新 .git/index，避免和别的会话抢锁
 export GIT_OPTIONAL_LOCKS=0
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-# shellcheck source=scripts/rakkord-env.sh
-source "$ROOT/scripts/rakkord-env.sh"
-rakkord_load_env
-BUILD_DIR=${RAKKORD_KWIN_BUILD_DIR:-$HOME/build/rakkord-kwin}
-RUNTIME_ROOT=${RAKKORD_RUNTIME_ROOT:-$HOME/.local/share/remote-desktop/kwin}
+# shellcheck source=scripts/muelsyse-env.sh
+source "$ROOT/scripts/muelsyse-env.sh"
+muelsyse_load_env
+BUILD_DIR=${MUELSYSE_KWIN_BUILD_DIR:-$HOME/build/muelsyse-kwin}
+RUNTIME_ROOT=${MUELSYSE_RUNTIME_ROOT:-$HOME/.local/share/remote-desktop/kwin}
 KWIN_SOURCE=$ROOT/kwin
 ADAPTER_SOURCE=$ROOT/kwin-adapter
 
@@ -74,7 +74,7 @@ check_build_sources() {
 if ((do_build)); then
     command -v ninja >/dev/null || fail "缺少 ninja"
     if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
-        # 选项与生产旧构建树 ~/build/kwin-adapter 的 CMakeCache 一致：RelWithDebInfo、Ninja、
+        # 选项与旧生产构建树的 CMakeCache 一致：RelWithDebInfo、Ninja、
         # 不编测试，其余都是 KWin 默认值；只把源码换成仓库。
         command -v cmake >/dev/null || fail "缺少 cmake"
         cmake -S "$KWIN_SOURCE" -B "$BUILD_DIR" -G Ninja \
@@ -94,8 +94,7 @@ fi
 bin=$BUILD_DIR/bin
 [[ -d "$bin" ]] || fail "构建树没有 bin/: $bin"
 
-# 复制集合按 09-15 staging 先例（~/src/codex/selkies-dual-cursor-build/kwin-prefix-*/bin），
-# 也就是当前生产 ~/build/kwin-adapter/bin 的全部顶层条目：
+# 复制集合即 KWin 构建树 bin/ 的全部顶层条目：
 #   kwin_wayland、libkwin.so*、libkcmkwincommon.so*（kcm 用）、kwin/（插件、effects、scripts、
 #   decorations）、org/ 与 org.kde.kdecoration3*/（QML 模块）、kf6/、overview/、plasma/。
 # 会话脚本 start-wayland-session.sh 只从 prefix 读 bin/kwin_wayland、bin/kwin/plugins、bin/，
@@ -194,7 +193,7 @@ if ((!do_build)); then
 fi
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 {
-    echo "rakkord_commit=$(git -C "$ROOT" rev-parse HEAD)"
+    echo "muelsyse_commit=$(git -C "$ROOT" rev-parse HEAD)"
     echo "kwin_source_commit=$kwin_source_commit"
     echo "dirty=$dirty"
     echo "built_at=$(date -Is -r "$staging/bin/kwin_wayland")"

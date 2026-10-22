@@ -3,7 +3,7 @@
 The browser places its input-method candidate window at the caret of the
 focused DOM element. That element is the stream overlay, so without help the
 window lands at an arbitrary spot rather than under the remote text field.
-`rakkord-imecaret` (RakkoRD/scripts) learns the caret rectangle of the focused
+`muelsyse-imecaret` (Muelsyse/scripts) learns the caret rectangle of the focused
 Qt app over the fcitx portal and streams it as JSON lines on a unix socket;
 this module follows that socket and turns each line into an
 `ime_caret,<json>` control message, whose rectangle the client maps from frame
@@ -32,12 +32,12 @@ NULL_MESSAGE = "ime_caret,null"
 
 
 def default_socket_path() -> Optional[str]:
-    """The sensor's socket: RAKKORD_IMECARET_SOCKET, else under XDG_RUNTIME_DIR."""
-    override = os.environ.get("RAKKORD_IMECARET_SOCKET")
+    """The sensor's socket: MUELSYSE_IMECARET_SOCKET, else under XDG_RUNTIME_DIR."""
+    override = os.environ.get("MUELSYSE_IMECARET_SOCKET")
     if override:
         return override
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    return os.path.join(runtime, "rakkord-imecaret.sock") if runtime else None
+    return os.path.join(runtime, "muelsyse-imecaret.sock") if runtime else None
 
 
 def message_from_line(line: bytes) -> Optional[str]:

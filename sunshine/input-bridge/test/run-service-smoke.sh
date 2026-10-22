@@ -1,6 +1,6 @@
 #!/bin/bash
 # Smoke test against the *deployed* bridge: it assumes
-# rakkord-sunshine-input.service is already running and does not start a second
+# muelsyse-sunshine-input.service is already running and does not start a second
 # bridge instance (two bridges would inject every event twice).
 #
 # It drives throw-away "Sunshine (libvirtualhid)" devices and prints what KWin
@@ -14,8 +14,8 @@ mkdir -p "$out"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export WAYLAND_DISPLAY=wayland-remote-desktop
 
-if [ "$(systemctl --user is-active rakkord-sunshine-input.service)" != "active" ]; then
-    echo "rakkord-sunshine-input.service is not active - start it first" >&2
+if [ "$(systemctl --user is-active muelsyse-sunshine-input.service)" != "active" ]; then
+    echo "muelsyse-sunshine-input.service is not active - start it first" >&2
     exit 1
 fi
 

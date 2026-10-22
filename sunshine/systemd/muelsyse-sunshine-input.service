@@ -13,7 +13,7 @@ Environment=WAYLAND_DISPLAY=wayland-remote-desktop
 Environment=XDG_RUNTIME_DIR=%t
 # 不传 --width/--height：让它从 wl_output 动态读逻辑尺寸，
 # 这样 Selkies 或 Moonlight 改分辨率时绝对坐标映射会自动跟上。
-ExecStart=%h/.local/libexec/rakkord-sunshine-input-bridge
+ExecStart=%h/.local/libexec/muelsyse-sunshine-input-bridge
 Restart=on-failure
 # KWin 没就绪时会连不上 socket，给足间隔避免疯狂重启刷日志。
 RestartSec=3

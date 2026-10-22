@@ -44,8 +44,8 @@ services:
       # 独立无头 Plasma 会话；Wayland 路径避免依赖主机 X11/TigerVNC 会话。
       SELKIES_WAYLAND: "true"
       SELKIES_ENCODER: h264enc
-      SELKIES_ENCODE_DRI: /dev/dri/renderD128
-      SELKIES_RENDER_DRI: /dev/dri/renderD128
+      SELKIES_ENCODE_DRI: ${MUELSYSE_DRI_NODE:-/dev/dri/renderD128}
+      SELKIES_RENDER_DRI: ${MUELSYSE_DRI_NODE:-/dev/dri/renderD128}
       SELKIES_AUTO_GPU: "true"
       SELKIES_USE_CPU: "false|locked"
 

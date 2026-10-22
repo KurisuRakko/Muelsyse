@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/deploy-host.sh 的离线测试：把脚本复制进临时假仓库，用 RAKKORD_DEPLOY_HOME 指向
+# scripts/deploy-host.sh 的离线测试：把脚本复制进临时假仓库，用 MUELSYSE_DEPLOY_HOME 指向
 # 临时 HOME、用假 systemctl 记录调用，全程不碰真实生产、不调 sudo、不重启任何服务。
 set -Eeuo pipefail
 
@@ -65,23 +65,23 @@ printf '[Service]\nExecStart=/bin/true\n' > "$repo/files/foo.service"
 printf 'Environment=A=new\n' > "$repo/files/selkies.conf"
 printf 'template default\n' > "$repo/files/remote.env"
 printf 'fresh template\n' > "$repo/files/fresh.env"
-printf '# 片段\n    allow @RAKKORD_PORT@\n' > "$repo/files/rule.nft"
-printf '#!/bin/sh\nexec @HOME@/bin/x --port @RAKKORD_PORT@ --lan @RAKKORD_LAN_BIND@ # @USER@:@GROUP@ @UID@ user@example.org\n' > "$repo/files/rendered.sh"
-printf 'bind @RAKKORD_NOT_SET@\n' > "$repo/files/needs-var.conf"
+printf '# 片段\n    allow @MUELSYSE_PORT@\n' > "$repo/files/rule.nft"
+printf '#!/bin/sh\nexec @HOME@/bin/x --port @MUELSYSE_PORT@ --lan @MUELSYSE_LAN_BIND@ # @USER@:@GROUP@ @UID@ user@example.org\n' > "$repo/files/rendered.sh"
+printf 'bind @MUELSYSE_NOT_SET@\n' > "$repo/files/needs-var.conf"
 printf 'built from source\n' > "$repo/src/hello/hello.in"
 printf 'hello-bin: hello.in\n\tcp hello.in hello-bin\n' > "$repo/src/hello/Makefile"
 
 tab=$'\t'
 cat > "$repo/deploy/manifest.tsv" <<EOF
 # repo_path	target	mode	owner	kind	restart
-files/session.sh${tab}~/.local/libexec/session${tab}755${tab}rakko${tab}copy${tab}session
-files/foo.service${tab}~/.config/systemd/user/foo.service${tab}644${tab}rakko${tab}copy${tab}unit:foo.service
-files/selkies.conf${tab}~/.config/systemd/user/remote-desktop-selkies.service.d/a.conf${tab}644${tab}rakko${tab}copy${tab}selkies
-files/remote.env${tab}~/.config/selkies/remote.env${tab}600${tab}rakko${tab}template${tab}selkies
-files/fresh.env${tab}~/.config/selkies/fresh.env${tab}600${tab}rakko${tab}template${tab}none
-files/rule.nft${tab}~/nftables.conf${tab}644${tab}rakko${tab}check${tab}nft-reload
-files/rendered.sh${tab}~/.local/libexec/rendered.sh${tab}755${tab}rakko${tab}render${tab}none
-src/hello${tab}~/.local/bin/hello-bin${tab}755${tab}rakko${tab}build${tab}none
+files/session.sh${tab}~/.local/libexec/session${tab}755${tab}user${tab}copy${tab}session
+files/foo.service${tab}~/.config/systemd/user/foo.service${tab}644${tab}user${tab}copy${tab}unit:foo.service
+files/selkies.conf${tab}~/.config/systemd/user/remote-desktop-selkies.service.d/a.conf${tab}644${tab}user${tab}copy${tab}selkies
+files/remote.env${tab}~/.config/selkies/remote.env${tab}600${tab}user${tab}template${tab}selkies
+files/fresh.env${tab}~/.config/selkies/fresh.env${tab}600${tab}user${tab}template${tab}none
+files/rule.nft${tab}~/nftables.conf${tab}644${tab}user${tab}check${tab}nft-reload
+files/rendered.sh${tab}~/.local/libexec/rendered.sh${tab}755${tab}user${tab}render${tab}none
+src/hello${tab}~/.local/bin/hello-bin${tab}755${tab}user${tab}build${tab}none
 system/x.service${tab}/etc/systemd/system/x.service${tab}644${tab}root${tab}copy${tab}system-unit:x.service
 EOF
 cat > "$repo/deploy/retired.tsv" <<EOF
@@ -106,14 +106,14 @@ printf 'user secret\n' > "$home/.config/selkies/remote.env"
 printf '[Service]\nExecStart=/bin/false\n' > "$home/.config/systemd/user/old-bridge.service"
 touch "$state/old-bridge.service.enabled" "$state/old-bridge.service.active"
 printf 'table inet filter {\n  chain input {\n\tallow 8090\n  }\n}\n' > "$home/nftables.conf"
-# 主机参数文件：RAKKORD_PORT 不写，走内置默认 8090
-mkdir -p "$home/.config/rakkord"
-printf '# 本机\nRAKKORD_LAN_BIND=192.0.2.7\n' > "$home/.config/rakkord/env"
+# 主机参数文件：MUELSYSE_PORT 不写，走内置默认 8090
+mkdir -p "$home/.config/muelsyse"
+printf '# 本机\nMUELSYSE_LAN_BIND=192.0.2.7\n' > "$home/.config/muelsyse/env"
 rendered_sh="#!/bin/sh
 exec $home/bin/x --port 8090 --lan 192.0.2.7 # $(id -un):$(id -gn) $(id -u) user@example.org"
 
-export RAKKORD_DEPLOY_HOME=$home RAKKORD_DEPLOY_SYSTEMCTL=$tmp/systemctl
-export RAKKORD_DEPLOY_DRIFT_SCRIPT=$tmp/no-drift-script
+export MUELSYSE_DEPLOY_HOME=$home MUELSYSE_DEPLOY_SYSTEMCTL=$tmp/systemctl
+export MUELSYSE_DEPLOY_DRIFT_SCRIPT=$tmp/no-drift-script
 run() { bash "$repo/scripts/deploy-host.sh" "$@" 2>&1; }
 
 # 1. dry-run 不写任何文件，也不调用 systemctl 的写操作。
@@ -154,10 +154,10 @@ pass "重启汇总文本"
 
 # 3. 漂移检查存在时前后各跑一次，退出码 1 只是"有漂移"。
 printf '#!/usr/bin/env bash\necho "DRIFT a"\necho "DRIFT_SUMMARY drift=1"\nexit 1\n' > "$tmp/drift.sh"
-out_drift=$(RAKKORD_DEPLOY_DRIFT_SCRIPT=$tmp/drift.sh run)
+out_drift=$(MUELSYSE_DEPLOY_DRIFT_SCRIPT=$tmp/drift.sh run)
 assert_contains "$out_drift" "DRIFT_CHECK[before] 有漂移: DRIFT_SUMMARY drift=1" "dry-run 前跑漂移检查"
 assert_not_contains "$out_drift" "DRIFT_CHECK[after]" "dry-run 不跑 after"
-out_nodrift=$(RAKKORD_DEPLOY_DRIFT_SCRIPT=$tmp/drift.sh run --no-drift-check)
+out_nodrift=$(MUELSYSE_DEPLOY_DRIFT_SCRIPT=$tmp/drift.sh run --no-drift-check)
 assert_not_contains "$out_nodrift" "DRIFT_CHECK" "--no-drift-check 关掉漂移检查"
 pass "漂移检查接入"
 
@@ -173,7 +173,7 @@ cmp -s "$repo/files/session.sh" "$home/.local/libexec/session" || fail "session 
 [[ $(cat "$home/.local/bin/hello-bin") == "built from source" ]] || fail "build 行没装上"
 [[ $(cat "$home/.local/libexec/rendered.sh") == "$rendered_sh" ]] || { cat "$home/.local/libexec/rendered.sh" >&2; fail "render 行没按展开结果装"; }
 [[ $(stat -c %a "$home/.local/libexec/rendered.sh") == 755 ]] || fail "render 行权限不对"
-[[ -f "$home/build/rakkord-hello/hello-bin" ]] || fail "build 行应在 ~/build/rakkord-hello 编"
+[[ -f "$home/build/muelsyse-hello/hello-bin" ]] || fail "build 行应在 ~/build/muelsyse-hello 编"
 backup_dir=$(sed -n 's/^BACKUP_DIR //p' <<< "$out")
 [[ -n "$backup_dir" && "$backup_dir" == "$home/.local/share/remote-desktop/backups/"* ]] || fail "没打印备份目录: $backup_dir"
 [[ $(cat "$backup_dir$home/.local/libexec/session") == "old session script" ]] || fail "旧 session 没按原路径备份"
@@ -279,17 +279,17 @@ pass "仍被引用的旧路径不退休"
 #     占位符没值时报错、不装、退出码 1。
 out=$(run)
 assert_not_contains "$out" "rendered.sh" "展开结果相同不报"
-printf 'RAKKORD_LAN_BIND=192.0.2.8\n' > "$home/.config/rakkord/env"
+printf 'MUELSYSE_LAN_BIND=192.0.2.8\n' > "$home/.config/muelsyse/env"
 out=$(run)
 assert_contains "$out" "UPDATE $home/.local/libexec/rendered.sh ← files/rendered.sh" "主机参数变了要更新"
 assert_contains "$out" "+exec $home/bin/x --port 8090 --lan 192.0.2.8" "diff 是展开后的内容"
-printf 'RAKKORD_LAN_BIND=192.0.2.7\n' > "$home/.config/rakkord/env"
+printf 'MUELSYSE_LAN_BIND=192.0.2.7\n' > "$home/.config/muelsyse/env"
 cp "$repo/deploy/manifest.tsv" "$tmp/needs-var.tsv"
 printf 'files/needs-var.conf\t~/.config/needs-var.conf\t644\tuser\trender\tnone\n' >> "$tmp/needs-var.tsv"
-rc=0; out=$(RAKKORD_DEPLOY_MANIFEST=$tmp/needs-var.tsv run --apply) || rc=$?
+rc=0; out=$(MUELSYSE_DEPLOY_MANIFEST=$tmp/needs-var.tsv run --apply) || rc=$?
 [[ $rc == 1 ]] || { printf '%s\n' "$out" >&2; fail "占位符没值应退出 1，实际 $rc"; }
 assert_contains "$out" "ERROR 展开占位符失败: files/needs-var.conf" "报展开失败"
-assert_contains "$out" "RAKKORD_NOT_SET" "点名缺的变量"
+assert_contains "$out" "MUELSYSE_NOT_SET" "点名缺的变量"
 [[ ! -e "$home/.config/needs-var.conf" ]] || fail "展开失败不该装"
 pass "render 行"
 

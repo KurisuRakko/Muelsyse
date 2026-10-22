@@ -16,11 +16,11 @@ die() {
 grep -qE '^VERSION_ID="?13([.]|"|$)' /etc/os-release || die "当前主机不是 Debian 13"
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-# shellcheck source=scripts/rakkord-env.sh
-source "$ROOT/scripts/rakkord-env.sh"
-rakkord_load_env
-RESOLUTION=${RAKKORD_RESOLUTION:-3840x2160}
-[[ "$RESOLUTION" =~ ^([0-9]+)x([0-9]+)$ ]] || die "RAKKORD_RESOLUTION 应是 宽x高: $RESOLUTION"
+# shellcheck source=scripts/muelsyse-env.sh
+source "$ROOT/scripts/muelsyse-env.sh"
+muelsyse_load_env
+RESOLUTION=${MUELSYSE_RESOLUTION:-3840x2160}
+[[ "$RESOLUTION" =~ ^([0-9]+)x([0-9]+)$ ]] || die "MUELSYSE_RESOLUTION 应是 宽x高: $RESOLUTION"
 WIDTH=${BASH_REMATCH[1]}
 HEIGHT=${BASH_REMATCH[2]}
 PROBE_BIN=${KWIN_POC_PROBE_BIN:-$HOME/src/pixelflux-kwin-poc/pixelflux/target/debug/examples/kwin-pipewire-poc}

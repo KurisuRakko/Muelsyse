@@ -13,10 +13,10 @@ grep -qE '^VERSION_ID="?13([.]|"|$)' /etc/os-release || fail "当前主机不是
 systemctl --user is-active --quiet remote-desktop-wayland.service || fail "Wayland service 未 active"
 systemctl --user is-active --quiet remote-desktop-selkies.service || fail "Selkies service 未 active"
 
-# shellcheck source=scripts/rakkord-env.sh
-source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/rakkord-env.sh"
-rakkord_load_env
-PORT=${1:-${RAKKORD_PORT:-8090}}
+# shellcheck source=scripts/muelsyse-env.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/muelsyse-env.sh"
+muelsyse_load_env
+PORT=${1:-${MUELSYSE_PORT:-8090}}
 loopback_listener=$(ss -ltnH | awk -v target="127.0.0.1:$PORT" '$4 == target {print $4}')
 [[ "$loopback_listener" == "127.0.0.1:$PORT" ]] || fail "没有 loopback listener 127.0.0.1:$PORT"
 # 只看 selkies 进程自己的监听；:$PORT 上的 socat、tailscaled 是设计如此的对外入口，不归它管

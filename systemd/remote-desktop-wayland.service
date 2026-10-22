@@ -33,9 +33,9 @@ Environment=XCURSOR_THEME=breeze_cursors
 Environment=XCURSOR_SIZE=24
 Environment=WAYLAND_DISPLAY=wayland-remote-desktop
 # KWin 跑 scripts/build-kwin.sh 装出来的版本化 prefix（current 软链），不再直接从构建树跑：
-# 旧的 ~/build/kwin-adapter 源码是 POC 树，一重编就会盖掉双光标修复。
+# 构建树一重编就可能盖掉双光标修复。
 Environment=SELKIES_KWIN_PREFIX=%h/.local/share/remote-desktop/kwin/current
-# kwin_wayland 和插件的 DT_RUNPATH 指向构建树（~/build/rakkord-kwin/bin），构建树随时可能
+# kwin_wayland 和插件的 DT_RUNPATH 指向构建树（~/build/muelsyse-kwin/bin），构建树随时可能
 # 被重编或清掉。glibc 的搜索顺序里 LD_LIBRARY_PATH
 # 先于 DT_RUNPATH，所以这一行让 prefix 自己的 bin/ 成为 libkwin 的唯一来源，
 # 换 prefix 时也不会再去别处取库。

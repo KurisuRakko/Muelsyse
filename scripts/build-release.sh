@@ -12,11 +12,11 @@
 #   scripts/build-release.sh --activate TS --restart
 #                                                  切链后只重启 remote-desktop-selkies（浏览器断几秒，窗口不丢）
 #
-# 环境变量：RAKKORD_RUNTIME_ROOT 产物根（默认 ~/.local/share/remote-desktop/selkies-kwin），测试时指到
-# 临时目录；RAKKORD_NODE_BIN 前端用的 node（默认 ~/.local/node-v24.21.0-linux-x64/bin，不存在时
-# 用 PATH 里 node 所在的目录）；RAKKORD_PIXELFLUX_TARGET 固定的 CARGO_TARGET_DIR（默认
-# ~/build/rakkord-pixelflux-target）；RAKKORD_SELKIES_VENV 装 selkies 第三方依赖的 venv（默认
-# /opt/selkies）。~/.config/rakkord/env 里写的值在环境没给时生效（见 scripts/rakkord-env.sh）。
+# 环境变量：MUELSYSE_RUNTIME_ROOT 产物根（默认 ~/.local/share/remote-desktop/selkies-kwin），测试时指到
+# 临时目录；MUELSYSE_NODE_BIN 前端用的 node（默认 ~/.local/node-v24.21.0-linux-x64/bin，不存在时
+# 用 PATH 里 node 所在的目录）；MUELSYSE_PIXELFLUX_TARGET 固定的 CARGO_TARGET_DIR（默认
+# ~/build/muelsyse-pixelflux-target）；MUELSYSE_SELKIES_VENV 装 selkies 第三方依赖的 venv（默认
+# /opt/selkies）。~/.config/muelsyse/env 里写的值在环境没给时生效（见 scripts/muelsyse-env.sh）。
 set -Eeuo pipefail
 # 只读 git 查询不刷新 .git/index，避免和别的会话抢锁
 export GIT_OPTIONAL_LOCKS=0
@@ -24,18 +24,18 @@ export GIT_OPTIONAL_LOCKS=0
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 SELKIES=$ROOT/selkies
 PIXELFLUX_CRATE=$ROOT/pixelflux/pixelflux
-# shellcheck source=scripts/rakkord-env.sh
-source "$ROOT/scripts/rakkord-env.sh"
-rakkord_load_env
-RUNTIME_ROOT=${RAKKORD_RUNTIME_ROOT:-$HOME/.local/share/remote-desktop/selkies-kwin}
-NODE_BIN=${RAKKORD_NODE_BIN:-$HOME/.local/node-v24.21.0-linux-x64/bin}
-if [[ -z "${RAKKORD_NODE_BIN:-}" && ! -x "$NODE_BIN/npm" ]] && command -v node >/dev/null 2>&1; then
+# shellcheck source=scripts/muelsyse-env.sh
+source "$ROOT/scripts/muelsyse-env.sh"
+muelsyse_load_env
+RUNTIME_ROOT=${MUELSYSE_RUNTIME_ROOT:-$HOME/.local/share/remote-desktop/selkies-kwin}
+NODE_BIN=${MUELSYSE_NODE_BIN:-$HOME/.local/node-v24.21.0-linux-x64/bin}
+if [[ -z "${MUELSYSE_NODE_BIN:-}" && ! -x "$NODE_BIN/npm" ]] && command -v node >/dev/null 2>&1; then
     NODE_BIN=$(dirname -- "$(command -v node)")
 fi
-PIXELFLUX_TARGET=${RAKKORD_PIXELFLUX_TARGET:-$HOME/build/rakkord-pixelflux-target}
+PIXELFLUX_TARGET=${MUELSYSE_PIXELFLUX_TARGET:-$HOME/build/muelsyse-pixelflux-target}
 PYTHON=/usr/bin/python3.13
 # 生产 PYTHONPATH 的第二项：selkies 的第三方依赖装在这个 venv 里，release 只遮住 selkies/pixelflux 本身。
-DEPS_SITE=${RAKKORD_SELKIES_VENV:-/opt/selkies}/lib/python3.13/site-packages
+DEPS_SITE=${MUELSYSE_SELKIES_VENV:-/opt/selkies}/lib/python3.13/site-packages
 
 skip_web=0
 pixelflux_so=
@@ -125,14 +125,14 @@ cp -a "$web_root" "$staging/site/selkies_web"
 install -m755 "$pixelflux_so" "$staging/site/pixelflux$ext_suffix"
 install -m644 "$ROOT/source-revisions.env" "$staging/source-revisions.env"
 
-# 4. BUILD-INFO：source-revisions.env 只记上游 tag，回滚时要靠这里知道是 RakkoRD 哪个提交。
+# 4. BUILD-INFO：source-revisions.env 只记上游 tag，回滚时要靠这里知道是 Muelsyse 哪个提交。
 if [[ -n "$(git -C "$ROOT" status --porcelain -- selkies pixelflux)" ]]; then
     dirty=1
 else
     dirty=0
 fi
 {
-    echo "rakkord_commit=$(git -C "$ROOT" rev-parse HEAD)"
+    echo "muelsyse_commit=$(git -C "$ROOT" rev-parse HEAD)"
     echo "dirty=$dirty"
     echo "built_at=$(date -Is)"
     echo "web=$( ((skip_web)) && echo skipped || echo built)"

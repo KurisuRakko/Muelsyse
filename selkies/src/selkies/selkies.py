@@ -97,7 +97,7 @@ from .display_utils import (
 from .input_handler import (
     BULK_DRAIN_TIMEOUT_S,
     PERF_INPUT,
-    RAKKORD_PERF,
+    MUELSYSE_PERF,
     WebRTCInput as InputHandler,
     CLIPBOARD_CHUNK_SIZE,
     gamepad_slot_denied,
@@ -642,7 +642,7 @@ async def _broadcast_to_clients(
 
 
 class _PerfDisplayWindow:
-    """一个显示器一秒内的视频计量（`RAKKORD_PERF` 打开时才有实例），只在事件循环上读写。
+    """一个显示器一秒内的视频计量（`MUELSYSE_PERF` 打开时才有实例），只在事件循环上读写。
 
     帧数都按逻辑帧计（frame_id 变化才加一），一帧的多条 stripe 只算一次；
     字节数按 chunk 实际大小累加。
@@ -877,7 +877,7 @@ class _VideoRelay:
         self.adaptive_drop_queue_age_ms = 0.0
         self.adaptive_drop_desync_frames = 0.0
         self.adaptive_drop_reason = 'initializing'
-        # RAKKORD_PERF：一帧的多条 stripe 被逐条拦下时 relay_drop 只记一次。
+        # MUELSYSE_PERF：一帧的多条 stripe 被逐条拦下时 relay_drop 只记一次。
         self._perf_drop_fid: Optional[int] = None
 
     def start(self) -> None:
@@ -996,17 +996,17 @@ class _VideoRelay:
         is_h264 = _is_h264_chunk(data)
         is_idr = is_h264 and data[1] == 0x01
         dropped = False
-        if RAKKORD_PERF:
+        if MUELSYSE_PERF:
             perf = _perf_display(self.display_id)
             pruned_before = self.adaptive_drop_dropped_frames
         if self.adaptive_active() and self._adaptive_prune(item['frame_id']):
             # 新到的 IDR 本身就是恢复点，跳到它不需要再请求一次同步。
             dropped = not is_idr
-            if RAKKORD_PERF:
+            if MUELSYSE_PERF:
                 perf.relay_drop += self.adaptive_drop_dropped_frames - pruned_before
         if (not is_idr and self.backlog
                 and self.backlog_bytes + size > self.budget):
-            if RAKKORD_PERF:
+            if MUELSYSE_PERF:
                 perf.relay_drop += len({entry[1]['frame_id'] for entry in self.backlog})
             self._clear_stale_backlog()
             dropped = True
@@ -1018,7 +1018,7 @@ class _VideoRelay:
             elif row not in self.live_rows:
                 deliver = False
                 dropped = True
-                if RAKKORD_PERF and item['frame_id'] != self._perf_drop_fid:
+                if MUELSYSE_PERF and item['frame_id'] != self._perf_drop_fid:
                     self._perf_drop_fid = item['frame_id']
                     perf.relay_drop += 1
         if deliver:
@@ -1064,7 +1064,7 @@ class _VideoRelay:
                         ds['unacked_since'] = now
                     if len(ds['sent_timestamps']) > SENT_FRAME_TIMESTAMP_HISTORY_SIZE:
                         ds['sent_timestamps'].popitem(last=False)
-                if RAKKORD_PERF:
+                if MUELSYSE_PERF:
                     send_started = time.monotonic()
                 try:
                     await asyncio.wait_for(
@@ -1082,7 +1082,7 @@ class _VideoRelay:
                 except (ConnectionResetError, OSError, RuntimeError):
                     self.server.clients.discard(self.ws)
                     return
-                if RAKKORD_PERF:
+                if MUELSYSE_PERF:
                     _perf_display(self.display_id).note_send(
                         new_frame, len(data), (time.monotonic() - send_started) * 1000.0)
                 self.server._bytes_sent_in_interval += len(data)
@@ -2766,8 +2766,8 @@ class DataStreamingServer(BaseStreamingService):
                         "displayId": did,
                         "settings": self._settings_payload_for_display(did),
                     }
-                    if RAKKORD_PERF:
-                        payload["rakkord_perf"] = True
+                    if MUELSYSE_PERF:
+                        payload["muelsyse_perf"] = True
                     messages[did] = json.dumps(payload)
                 return messages[did]
 
@@ -3992,9 +3992,9 @@ class DataStreamingServer(BaseStreamingService):
             "type": "server_settings",
             "settings": self._settings_payload_for_display('primary'),
         }
-        if RAKKORD_PERF:
+        if MUELSYSE_PERF:
             # Tells the page to start its own per-second RD_PERF_CLIENT reports.
-            server_settings_payload["rakkord_perf"] = True
+            server_settings_payload["muelsyse_perf"] = True
         try:
             await websocket.send_str(json.dumps(server_settings_payload))
         except (ConnectionResetError, OSError, RuntimeError):
@@ -4274,7 +4274,7 @@ class DataStreamingServer(BaseStreamingService):
                     if message.startswith("RD_PERF_CLIENT"):
                         # Ahead of the viewer gate: a viewer's page reports too, and
                         # nothing here acts on the session. Off, it is dropped silently.
-                        if RAKKORD_PERF:
+                        if MUELSYSE_PERF:
                             data_logger.info(_perf_client_line(
                                 message, raddr, int(time.time() * 1000)))
                         continue
@@ -6085,11 +6085,11 @@ class DataStreamingServer(BaseStreamingService):
                             # ACKs; masked here so RTT lookups match past frame 65535.
                             'frame_id': frame.frame_id & 0xFFFF}
                     # Stamped on the deliver thread: the hop to the loop is what it measures.
-                    delivered_at = time.monotonic() if RAKKORD_PERF else 0.0
+                    delivered_at = time.monotonic() if MUELSYSE_PERF else 0.0
 
                     def do_fanout():
                         """Offer the chunk to each target socket's relay, on the loop."""
-                        if RAKKORD_PERF:
+                        if MUELSYSE_PERF:
                             perf = _perf_display(display_id)
                             perf.note_rx(item['frame_id'], len(item['data']),
                                          (time.monotonic() - delivered_at) * 1000.0)
@@ -6114,7 +6114,7 @@ class DataStreamingServer(BaseStreamingService):
                                 # ACK backpressure throttles the controller only; its relay
                                 # stays warm but gated, resuming at the IDR the lift requests.
                                 targets.discard(pc_ws)
-                                if RAKKORD_PERF:
+                                if MUELSYSE_PERF:
                                     perf.note_gated(item['frame_id'])
                                 relay = group.get(pc_ws)
                                 if relay is not None:
@@ -6127,7 +6127,7 @@ class DataStreamingServer(BaseStreamingService):
                                 targets = {ws}
                             else:
                                 targets = set()
-                                if RAKKORD_PERF and ws is not None:
+                                if MUELSYSE_PERF and ws is not None:
                                     perf.note_gated(item['frame_id'])
                                 relay = group.get(ws) if ws is not None else None
                                 if relay is not None:
@@ -6364,8 +6364,8 @@ class DataStreamingServer(BaseStreamingService):
         self._tasks_to_run.append(
             asyncio.create_task(self.ime_caret_relay.run(), name="ImeCaretRelay")
         )
-        if RAKKORD_PERF:
-            logger.info("RAKKORD_PERF on: logging RD_PERF_SRV lines every second.")
+        if MUELSYSE_PERF:
+            logger.info("MUELSYSE_PERF on: logging RD_PERF_SRV lines every second.")
             self._tasks_to_run.append(
                 asyncio.create_task(_perf_report_loop(), name="PerfReport"))
             self._tasks_to_run.append(

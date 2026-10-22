@@ -4,7 +4,7 @@
  * prints every input event the compositor delivers through the normal
  * wl_pointer / wl_keyboard path.
  *
- * This is the read-back instrument for testing rakkord-sunshine-input-bridge: it shows
+ * This is the read-back instrument for testing muelsyse-sunshine-input-bridge: it shows
  * what KWin actually did with the injected events, in the compositor's own
  * coordinate space (surface-local == logical screen space, because the surface
  * covers the whole output at the origin).

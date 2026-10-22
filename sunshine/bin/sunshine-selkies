@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Moonlight 会话期间对 Selkies 网页端的处理方式。
-#   keep（默认）：保持运行，@RAKKORD_PUBLIC_HOST@ 照常可用；两个捕获流会抢 GPU。
+#   keep（默认）：保持运行，@MUELSYSE_PUBLIC_HOST@ 照常可用；两个捕获流会抢 GPU。
 #   stop        ：停掉，省开销，但网页端会 502。
 set -u
 PREF=@HOME@/.config/sunshine/selkies-policy

@@ -881,7 +881,7 @@ void ScreenCastStream::addCursorMetadata(spa_buffer *spaBuffer, Cursor *cursor)
     spaMetaCursor->position.y = position.y();
     spaMetaCursor->bitmap_offset = 0;
 
-    // RakkoRD：hotspot 和位图必须成对。以前每帧写实时 hotspot、只在 invalid 时附图，
+    // Muelsyse：hotspot 和位图必须成对。以前每帧写实时 hotspot、只在 invalid 时附图，
     // 形状切换的瞬间会出现「新 hotspot + 下游缓存的旧图」或「新图 + 旧 hotspot」，
     // 光标跳一下可达 ~300ms。现在无图帧只写上次附图时的 hotspot；实时 hotspot
     // 一旦和它不同就当 invalid，这一帧连图一起重发。形状变化后再连续附图几帧，

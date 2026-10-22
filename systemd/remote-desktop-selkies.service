@@ -20,12 +20,12 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 Environment=XDG_CURRENT_DESKTOP=KDE
 Environment=XDG_SESSION_TYPE=wayland
 Environment=QT_QPA_PLATFORM=wayland
-Environment=PYTHONPATH=%h/.local/share/remote-desktop/selkies-kwin/site:@RAKKORD_SELKIES_VENV@/lib/python3.13/site-packages
+Environment=PYTHONPATH=%h/.local/share/remote-desktop/selkies-kwin/site:@MUELSYSE_SELKIES_VENV@/lib/python3.13/site-packages
 Environment=SELKIES_WEB_ROOT=%h/.local/share/remote-desktop/selkies-kwin/site/selkies_web
 Environment=WAYLAND_DISPLAY=wayland-remote-desktop
 Environment=PIXELFLUX_WAYLAND=true
 Environment=SELKIES_ADDR=127.0.0.1
-Environment=SELKIES_PORT=@RAKKORD_PORT@
+Environment=SELKIES_PORT=@MUELSYSE_PORT@
 Environment=SELKIES_WAYLAND_HOST_DISPLAY=wayland-remote-desktop
 Environment=SELKIES_WAYLAND_HOST_BACKEND=kwin
 Environment=SELKIES_KWIN_ADAPTER_SOCKET=%t/selkies-kwin-adapter.sock
@@ -44,7 +44,7 @@ Environment=PIXELFLUX_KWIN_STATS=1
 # 见 scripts/selkies-dri-exec.sh），失败则回退到按 PCI 现场解析（防编号漂移）。
 # 见仓库 scripts/dri-node-resolve.sh、scripts/selkies-dri-exec.sh、drop-in dri-node.conf。
 # AUTO_GPU 保留：只在 DRINODE 为空时被 pixelflux 用来兜底；包装器会按实际卡同步它。
-Environment=AUTO_GPU=@RAKKORD_AUTO_GPU@
+Environment=AUTO_GPU=@MUELSYSE_AUTO_GPU@
 Environment=SELKIES_ENCODER=h264enc
 Environment=SELKIES_FRAMERATE=60-60
 Environment=SELKIES_AUDIO_ENABLED=true

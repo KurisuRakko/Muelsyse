@@ -1,6 +1,6 @@
 # Muelsyse
 
-*[English](README.md) · 原名 RakkoRD；名字取自《明日方舟》的缪尔赛思，她能派出水做的分身替自己去别处干活。*
+*[English](README.md)*
 
 一个基于 KDE Plasma Wayland 与 [Selkies](https://github.com/selkies-project/selkies)
 的远程桌面：通过 PipeWire/DMA-BUF 捕获真实的 KWin 会话，用硬件 H.264 编码，
@@ -119,7 +119,7 @@ flowchart LR
    ——它们看起来像拥塞，其实是重新同步。
 4. **输入。** 滚轮和触控板改发小数轴增量（`ws,<dx>,<dy>`），由客户端按帧
    缓动，不再每 100 ms 发一次整格；KWin `fake_input` 本来就收 `wl_fixed`，
-   只有 X11/uinput 仍按整格。`scripts/rakkord-imecaret.py` 经 fcitx D-Bus
+   只有 X11/uinput 仍按整格。`scripts/muelsyse-imecaret.py` 经 fcitx D-Bus
    portal 拿到当前 Qt app 的光标矩形，`selkies/src/selkies/ime_caret.py`
    转发给浏览器，输入法候选框因此跟着远程文字光标走。平板的触控手势与原生
    触摸直通在 `selkies/addons/selkies-web-core/lib/touch-*.js`。

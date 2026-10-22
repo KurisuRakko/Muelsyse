@@ -20,34 +20,34 @@
 #   target  用户文件写 ~/...，root 文件写绝对路径
 #   kind    copy | render（展开占位符后按 copy 处理）| template（目标不存在才装）| build |
 #           check（不装，只检查）
-#           render 和 check 的仓库文件里 @HOME@ @USER@ @GROUP@ @UID@ @RAKKORD_*@ 先展开，
-#           取值见 scripts/check-drift.py 的 render_values（主机值在 ~/.config/rakkord/env，
-#           样例 config/rakkord.env.example）；有占位符没值就报错不装。
+#           render 和 check 的仓库文件里 @HOME@ @USER@ @GROUP@ @UID@ @MUELSYSE_*@ 先展开，
+#           取值见 scripts/check-drift.py 的 render_values（主机值在 ~/.config/muelsyse/env，
+#           样例 config/muelsyse.env.example）；有占位符没值就报错不装。
 #           build 的 repo_path 是带 Makefile 的源码目录，写成 dir 或 dir:产物名；产物名缺省
-#           取 target 的文件名。--apply 时复制到 ~/build/rakkord-<目录名> 里 make，dry-run
+#           取 target 的文件名。--apply 时复制到 ~/build/muelsyse-<目录名> 里 make，dry-run
 #           在临时目录里编，只为比较。
 #           check 要求 repo 文件里每条非注释行（去首尾空白）都在 target 里出现。
 #   restart session | selkies | unit:<user unit> | system-unit:<unit> | udev-reload |
 #           nft-reload | reboot | none
 #
-# 测试用环境变量：RAKKORD_DEPLOY_HOME 替代 $HOME（展开 ~ 和备份目录根），设了它就跳过
-# 所有 root 行；RAKKORD_DEPLOY_MANIFEST/RETIRED/UNITS 指定输入表；RAKKORD_DEPLOY_SYSTEMCTL
-# 替代 systemctl；RAKKORD_DEPLOY_DRIFT_SCRIPT 替代漂移检查脚本。
+# 测试用环境变量：MUELSYSE_DEPLOY_HOME 替代 $HOME（展开 ~ 和备份目录根），设了它就跳过
+# 所有 root 行；MUELSYSE_DEPLOY_MANIFEST/RETIRED/UNITS 指定输入表；MUELSYSE_DEPLOY_SYSTEMCTL
+# 替代 systemctl；MUELSYSE_DEPLOY_DRIFT_SCRIPT 替代漂移检查脚本。
 set -Eeuo pipefail
 shopt -s extglob
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-MANIFEST=${RAKKORD_DEPLOY_MANIFEST:-$ROOT/deploy/manifest.tsv}
-RETIRED=${RAKKORD_DEPLOY_RETIRED:-$ROOT/deploy/retired.tsv}
-UNITS=${RAKKORD_DEPLOY_UNITS:-$ROOT/deploy/units.tsv}
-DRIFT_SCRIPT=${RAKKORD_DEPLOY_DRIFT_SCRIPT:-$ROOT/scripts/check-drift.sh}
+MANIFEST=${MUELSYSE_DEPLOY_MANIFEST:-$ROOT/deploy/manifest.tsv}
+RETIRED=${MUELSYSE_DEPLOY_RETIRED:-$ROOT/deploy/retired.tsv}
+UNITS=${MUELSYSE_DEPLOY_UNITS:-$ROOT/deploy/units.tsv}
+DRIFT_SCRIPT=${MUELSYSE_DEPLOY_DRIFT_SCRIPT:-$ROOT/scripts/check-drift.sh}
 # 占位符展开只有 check-drift.py 一份实现，部署和漂移检查按同一个结果比较。
 RENDERER=$ROOT/scripts/check-drift.py
-DEPLOY_HOME=${RAKKORD_DEPLOY_HOME:-$HOME}
-SYSTEMCTL=${RAKKORD_DEPLOY_SYSTEMCTL:-systemctl}
+DEPLOY_HOME=${MUELSYSE_DEPLOY_HOME:-$HOME}
+SYSTEMCTL=${MUELSYSE_DEPLOY_SYSTEMCTL:-systemctl}
 # 测试只允许碰临时 HOME，root 行一律跳过，免得测试去读写 /etc。
 TEST_HOME=0
-[[ -n "${RAKKORD_DEPLOY_HOME:-}" ]] && TEST_HOME=1
+[[ -n "${MUELSYSE_DEPLOY_HOME:-}" ]] && TEST_HOME=1
 USER_UNIT_DIR=$DEPLOY_HOME/.config/systemd/user
 SYSTEM_UNIT_DIR=/etc/systemd/system
 # 备份目录在第一次真要备份时才建；同一秒内跑两次时加序号，免得后一次覆盖前一次的备份。
@@ -87,11 +87,11 @@ while (($#)); do
 done
 
 ((restart && !apply)) && fail "--restart/--restart-session 只能和 --apply 一起用"
-((TEST_HOME && system)) && fail "设了 RAKKORD_DEPLOY_HOME 时不处理 root 行，不能加 --system"
+((TEST_HOME && system)) && fail "设了 MUELSYSE_DEPLOY_HOME 时不处理 root 行，不能加 --system"
 [[ -f "$MANIFEST" ]] || fail "manifest 不存在: $MANIFEST"
 
 # dry-run 里 build 行要在临时目录编一次才能比较；退出时只清自己建的这个目录。
-work_dir=$(mktemp -d "${TMPDIR:-/tmp}/rakkord-deploy.XXXXXX")
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/muelsyse-deploy.XXXXXX")
 trap 'rm -rf -- "$work_dir"' EXIT
 
 mode_label() { ((apply)) && echo apply || echo dry-run; }
@@ -183,7 +183,7 @@ render_source() {
     local repo=$1 out
     out=$work_dir/render/$repo
     mkdir -p "$(dirname "$out")"
-    RAKKORD_DRIFT_HOME=$DEPLOY_HOME /usr/bin/python3 -I "$RENDERER" --render "$ROOT/$repo" > "$out" || return 1
+    MUELSYSE_DRIFT_HOME=$DEPLOY_HOME /usr/bin/python3 -I "$RENDERER" --render "$ROOT/$repo" > "$out" || return 1
     printf '%s\n' "$out"
 }
 
@@ -221,7 +221,7 @@ check_fragment() {
     return "$missing"
 }
 
-# build 行：dry-run 在临时目录编（不碰 ~/build），--apply 在 ~/build/rakkord-<目录名> 编。
+# build 行：dry-run 在临时目录编（不碰 ~/build），--apply 在 ~/build/muelsyse-<目录名> 编。
 build_artifact() {
     local repo=$1 target=$2 src_dir artifact build_dir log
     src_dir=$ROOT/${repo%%:*}
@@ -232,13 +232,13 @@ build_artifact() {
     fi
     [[ -f "$src_dir/Makefile" ]] || { echo "  ERROR build 源码目录没有 Makefile: $src_dir" >&2; return 1; }
     if ((apply)); then
-        build_dir=$DEPLOY_HOME/build/rakkord-$(basename "$src_dir")
+        build_dir=$DEPLOY_HOME/build/muelsyse-$(basename "$src_dir")
     else
         build_dir=$work_dir/build-$(basename "$src_dir")
     fi
     mkdir -p "$build_dir"
     cp -a -- "$src_dir/." "$build_dir/"
-    log=$build_dir/rakkord-deploy-build.log
+    log=$build_dir/muelsyse-deploy-build.log
     if ! make -C "$build_dir" "$artifact" > "$log" 2>&1; then
         echo "  ERROR make $artifact 失败，日志: $log" >&2
         tail -n 20 "$log" | sed 's/^/    /' >&2

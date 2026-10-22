@@ -12,8 +12,8 @@
       "image-path": "desktop.png",
       "prep-cmd": [
         {
-          "do": "xrandr --output HDMI-1 --mode 1920x1080",
-          "undo": "xrandr --output HDMI-1 --mode 1920x1200"
+          "do": "xrandr --output @MUELSYSE_SUNSHINE_OUTPUT@ --mode @MUELSYSE_SUNSHINE_MODE@",
+          "undo": "xrandr --output @MUELSYSE_SUNSHINE_OUTPUT@ --mode @MUELSYSE_SUNSHINE_RESTORE_MODE@"
         }
       ]
     },

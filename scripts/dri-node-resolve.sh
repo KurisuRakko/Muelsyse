@@ -19,7 +19,7 @@
 # 任务 007 后的消费者（两种模式都要对）：
 #   * scripts/selkies-dri-exec.sh —— **跟随 KWin 实际打开的 render 节点**
 #     （渲染卡=编码卡；跨卡时 KWin 后端每帧丢帧）；
-#   * sunshine/libexec/rakkord-sunshine-nvenc-prep.sh —— adapter_name 按当前模式指向对应卡；
+#   * sunshine/libexec/muelsyse-sunshine-nvenc-prep.sh —— adapter_name 按当前模式指向对应卡；
 #   * scripts/verify-nvenc.sh —— 按 dri_mode() 分支断言两种模式的模块/节点/选卡；
 #   * system/sbin/rakko-gpu-mode（装到 /usr/local/sbin） —— 只写 /etc/modprobe.d、/etc/modules-load.d，不用本库。
 #

@@ -2,6 +2,6 @@
 Type=Application
 Name=Sunshine Input Bridge
 Comment=Grants org_kde_kwin_fake_input to the Sunshine/Moonlight input bridge
-Exec=@HOME@/.local/libexec/rakkord-sunshine-input-bridge
+Exec=@HOME@/.local/libexec/muelsyse-sunshine-input-bridge
 X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input
 NoDisplay=true

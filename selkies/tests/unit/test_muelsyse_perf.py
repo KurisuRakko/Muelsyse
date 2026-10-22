@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RAKKORD_PERF metering: the per-second RD_PERF_SRV line and RD_PERF_CLIENT relay.
+"""MUELSYSE_PERF metering: the per-second RD_PERF_SRV line and RD_PERF_CLIENT relay.
 
 With the switch on, the server counts what the pixelflux callback hands the
 loop, what the ACK gate holds back, what each relay drops and sends, the
@@ -7,9 +7,9 @@ pointer messages the input handler dispatches and how late the loop wakes, and
 prints one fixed-format line per display per active second. A client report
 (`RD_PERF_CLIENT <json>`) is logged as-is, ahead of the viewer gate and the
 input handler; with the switch off it is dropped without a word and the
-server_settings payloads carry no `rakkord_perf` key.
+server_settings payloads carry no `muelsyse_perf` key.
 
-Usage: python3 tests/unit/test_rakkord_perf.py
+Usage: python3 tests/unit/test_muelsyse_perf.py
 """
 import asyncio
 import gzip
@@ -21,7 +21,7 @@ TESTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(TESTS)
 sys.path.insert(0, os.path.join(REPO, "src"))
 # Read once at import, so it has to be set before the modules load.
-os.environ["RAKKORD_PERF"] = "1"
+os.environ["MUELSYSE_PERF"] = "1"
 
 passed = failed = 0
 
@@ -32,7 +32,7 @@ def check(label: str, ok, detail="") -> None:
         passed += 1
     else:
         failed += 1
-    print(f"{'PASS' if ok else 'FAIL'}  [rakkord-perf] {label}  {detail}", flush=True)
+    print(f"{'PASS' if ok else 'FAIL'}  [muelsyse-perf] {label}  {detail}", flush=True)
 
 
 try:
@@ -44,8 +44,8 @@ except ModuleNotFoundError as exc:
           flush=True)
     sys.exit(77)  # helpers.SKIP_EXIT, without importing the e2e helper module
 except Exception as exc:  # pragma: no cover - reported, never silently passed
-    print(f"FAIL  [rakkord-perf] the modules import  {exc}", flush=True)
-    print("[rakkord-perf] 0/1 passed")
+    print(f"FAIL  [muelsyse-perf] the modules import  {exc}", flush=True)
+    print("[muelsyse-perf] 0/1 passed")
     sys.exit(1)
 
 SOURCE = open(os.path.join(REPO, "src", "selkies", "selkies.py"), encoding="utf-8").read()
@@ -54,7 +54,7 @@ LINE_RE = re.compile(
     r"sent=\d+ sent_kb=\d+ relay_drop=\d+ send_ms_max=(-|\d+\.\d) in_m=\d+ "
     r"in_iv=(-|\d+\.\d/\d+\.\d/\d+\.\d) loop_lag_ms_max=(-|\d+\.\d)$")
 
-check("the switch reads on from RAKKORD_PERF=1", srv.RAKKORD_PERF is True)
+check("the switch reads on from MUELSYSE_PERF=1", srv.MUELSYSE_PERF is True)
 
 # --- percentile helper ------------------------------------------------------
 check("no samples is a dash", srv._perf_triplet([]) == "-")
@@ -206,14 +206,14 @@ check("the branch sits ahead of the viewer gate and the input handler",
       branch_at < viewer_at < input_at)
 branch = handler[branch_at:handler.index("perms = client_permissions.get(websocket)", branch_at)]
 check("off, the branch drops the report without logging",
-      re.search(r"if RAKKORD_PERF:\s+data_logger\.info\(_perf_client_line\(", branch)
+      re.search(r"if MUELSYSE_PERF:\s+data_logger\.info\(_perf_client_line\(", branch)
       is not None and branch.rstrip().endswith("continue")
       and "warning" not in branch)
 
 # --- server_settings flag ---------------------------------------------------
-flags = re.findall(r'if RAKKORD_PERF:\s+(?:#[^\n]*\s+)?\S+\["rakkord_perf"\] = True', SOURCE)
-check("both server_settings payloads gain rakkord_perf only behind the switch",
-      len(flags) == 2 and SOURCE.count('"rakkord_perf"') == 2, flags)
+flags = re.findall(r'if MUELSYSE_PERF:\s+(?:#[^\n]*\s+)?\S+\["muelsyse_perf"\] = True', SOURCE)
+check("both server_settings payloads gain muelsyse_perf only behind the switch",
+      len(flags) == 2 and SOURCE.count('"muelsyse_perf"') == 2, flags)
 
-print(f"[rakkord-perf] {passed}/{passed + failed} passed")
+print(f"[muelsyse-perf] {passed}/{passed + failed} passed")
 sys.exit(1 if failed else 0)

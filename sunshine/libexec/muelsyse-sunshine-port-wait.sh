@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# rakkord-sunshine-port-wait.sh —— Sunshine 的 ExecStartPost：启动看门狗。
+# muelsyse-sunshine-port-wait.sh —— Sunshine 的 ExecStartPost：启动看门狗。
 #
-# 安装位置：~/.local/libexec/rakkord-sunshine-port-wait.sh
-# 仓库源文件：sunshine/libexec/rakkord-sunshine-port-wait.sh
+# 安装位置：~/.local/libexec/muelsyse-sunshine-port-wait.sh
+# 仓库源文件：sunshine/libexec/muelsyse-sunshine-port-wait.sh
 #
 # 为什么需要它（2026-10-02 实测）：
 #   9/30 16:11 KWin 会话崩溃后重启，Sunshine 的 portal restore token 失效，
@@ -32,11 +32,11 @@ port_ok() {
 start=$SECONDS
 while :; do
     if port_ok; then
-        printf 'rakkord-sunshine-port-wait: 127.0.0.1:%s 已监听（%ss）\n' "$PORT" "$((SECONDS - start))"
+        printf 'muelsyse-sunshine-port-wait: 127.0.0.1:%s 已监听（%ss）\n' "$PORT" "$((SECONDS - start))"
         exit 0
     fi
     if [ $((SECONDS - start)) -ge "$WAIT_MAX" ]; then
-        printf 'rakkord-sunshine-port-wait: %ss 内 127.0.0.1:%s 仍未监听——Sunshine 多半卡在 portal 授权，判定启动失败\n' \
+        printf 'muelsyse-sunshine-port-wait: %ss 内 127.0.0.1:%s 仍未监听——Sunshine 多半卡在 portal 授权，判定启动失败\n' \
             "$WAIT_MAX" "$PORT" >&2
         exit 1
     fi

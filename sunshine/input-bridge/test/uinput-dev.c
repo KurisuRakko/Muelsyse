@@ -4,7 +4,7 @@
  * like the ones Sunshine's libvirtualhid creates, and push a scripted
  * sequence of events through them.
  *
- * Used to test rakkord-sunshine-input-bridge without a Moonlight client.
+ * Used to test muelsyse-sunshine-input-bridge without a Moonlight client.
  *
  * usage: uinput-dev <abs|rel|wheel|kbd|highkey> [abs_range]
  */

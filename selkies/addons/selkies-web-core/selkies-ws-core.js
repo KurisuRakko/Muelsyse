@@ -1417,11 +1417,11 @@ const parseAvcCodecFromAnnexB = (bytes) => {
 };
 
 /**
- * RakkoRD pipeline meter: once a second it reports where the video path
+ * Muelsyse pipeline meter: once a second it reports where the video path
  * between pointer and glass loses frames, to the console as `[RD_PERF]` and
  * to the server as `RD_PERF_CLIENT {json}`. Off unless the server's
- * `server_settings` carries `rakkord_perf: true`, the URL has `rdperf=1` or
- * localStorage holds `rakkord_perf=1`; off, every counting point costs one
+ * `server_settings` carries `muelsyse_perf: true`, the URL has `rdperf=1` or
+ * localStorage holds `muelsyse_perf=1`; off, every counting point costs one
  * `rdPerf.on` test and no timer, rAF loop or frame callback runs.
  *
  * The counters live on `window.__rdPerf` so lib/input.js can add `mm`
@@ -1648,7 +1648,7 @@ function rdPerfEnable() {
 
 try {
   if (new URLSearchParams(window.location.search).get('rdperf') === '1' ||
-      window.localStorage.getItem('rakkord_perf') === '1') {
+      window.localStorage.getItem('muelsyse_perf') === '1') {
     rdPerfEnable();
   }
 } catch (e) { /* storage blocked: the server can still turn it on */ }
@@ -7291,7 +7291,7 @@ class WorkerWebSocket {
             if (typeof obj.bandwidth_mbps === 'number') networkStat.bandwidthMbps = obj.bandwidth_mbps;
           }
           else if (obj.type === 'server_settings') {
-              if (obj.rakkord_perf === true) rdPerfEnable();
+              if (obj.muelsyse_perf === true) rdPerfEnable();
               applyStreamPixelBudget(obj.settings && obj.settings.stream_pixel_budget);
               if (displayId !== 'primary' && obj.settings.second_screen && obj.settings.second_screen.value === false) {
                   console.error("The server reports no second display is available. This client will not function.");

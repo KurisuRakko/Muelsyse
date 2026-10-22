@@ -14,17 +14,17 @@
 # 覆盖前的旧文件镜像进 ~/.local/share/remote-desktop/backups/<时间戳>/，与 deploy-host.sh 同一处。
 # 改 kwinrc/kcminputrc 要重启整个会话才生效；本脚本不重启任何服务。
 #
-# 测试用环境变量：RAKKORD_DEPLOY_HOME 替代 $HOME；设了它就跳过 gsettings 和 kbuildsycoca6
+# 测试用环境变量：MUELSYSE_DEPLOY_HOME 替代 $HOME；设了它就跳过 gsettings 和 kbuildsycoca6
 # （这两个写的是真实用户的 dconf 和缓存，不跟 HOME 走）。
 set -Eeuo pipefail
 
-DEPLOY_HOME=${RAKKORD_DEPLOY_HOME:-$HOME}
+DEPLOY_HOME=${MUELSYSE_DEPLOY_HOME:-$HOME}
 TEST_HOME=0
-[[ -n "${RAKKORD_DEPLOY_HOME:-}" ]] && TEST_HOME=1
+[[ -n "${MUELSYSE_DEPLOY_HOME:-}" ]] && TEST_HOME=1
 # 备份目录在第一次真要备份时才建；同一秒内跑两次时加序号，免得后一次覆盖前一次的备份。
 BACKUP_ROOT=$DEPLOY_HOME/.local/share/remote-desktop/backups
 BACKUP_DIR=
-SYSTEM_PYTHON=${RAKKORD_SYSTEM_PYTHON:-/usr/bin/python3.13}
+SYSTEM_PYTHON=${MUELSYSE_SYSTEM_PYTHON:-/usr/bin/python3.13}
 PYTHON_ELF=$DEPLOY_HOME/.local/libexec/selkies-python3.13
 CURSOR_THEME=breeze_cursors
 CURSOR_SIZE=24

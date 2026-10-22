@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /*
- * rakkord-sunshine-input-bridge
+ * muelsyse-sunshine-input-bridge
  * =============================
  *
  * Sunshine (Moonlight host) on Linux injects input exclusively through

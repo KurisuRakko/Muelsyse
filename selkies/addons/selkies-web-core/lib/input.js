@@ -1837,7 +1837,7 @@ export class Input {
 
     /**
      * Logs one cursor update for diagnosing a bitmap paired with another
-     * cursor's hotspot, when `localStorage.rakkordCursorDebug` is `'1'`: the
+     * cursor's hotspot, when `localStorage.muelsyseCursorDebug` is `'1'`: the
      * time, handle, hotspot, the PNG's own size read from its IHDR, a hash
      * and length of the base64, the device pixel ratio and cursor density, and
      * the CSS cursor in force with the data URL elided to its length.
@@ -1846,7 +1846,7 @@ export class Input {
      */
     _logCursorUpdate(cursorData, path) {
         let enabled = false;
-        try { enabled = localStorage.getItem('rakkordCursorDebug') === '1'; } catch (e) { /* storage blocked */ }
+        try { enabled = localStorage.getItem('muelsyseCursorDebug') === '1'; } catch (e) { /* storage blocked */ }
         if (!enabled) return;
         const b64 = cursorData.curdata || '';
         let size = '-';

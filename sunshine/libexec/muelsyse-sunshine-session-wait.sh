@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# rakkord-sunshine-session-wait.sh —— Sunshine 的 ExecStartPre（任务 010）：开机竞态的有界等待。
+# muelsyse-sunshine-session-wait.sh —— Sunshine 的 ExecStartPre（任务 010）：开机竞态的有界等待。
 #
-# 安装位置：~/.local/libexec/rakkord-sunshine-session-wait.sh（仓库源文件 sunshine/libexec/rakkord-sunshine-session-wait.sh）
+# 安装位置：~/.local/libexec/muelsyse-sunshine-session-wait.sh（仓库源文件 sunshine/libexec/muelsyse-sunshine-session-wait.sh）
 #
 # 为什么需要它（实测证据，2026-09-25 那次开机）：
 #   20:37:53  systemd 启动 Sunshine（包自带 ExecStartPre=/bin/sleep 5）
@@ -50,8 +50,8 @@ case "$WAIT_MAX" in
     ''|*[!0-9]*) WAIT_MAX=60 ;;
 esac
 
-log()  { printf 'rakkord-sunshine-session-wait: %s\n' "$*"; }
-warn() { printf 'rakkord-sunshine-session-wait: %s\n' "$*" >&2; }
+log()  { printf 'muelsyse-sunshine-session-wait: %s\n' "$*"; }
+warn() { printf 'muelsyse-sunshine-session-wait: %s\n' "$*" >&2; }
 
 # ---------------------------------------------------------------- 三个探针
 # 返回 0 = 就绪，非 0 = 未就绪；每个探针自己带超时，绝不无限阻塞。

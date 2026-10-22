@@ -16,8 +16,8 @@ socket 协议：每行一个 JSON，连接建立时先发一次当前状态，�
 坐标是 X 根窗口像素（Xwayland 缩放开着时就是视频帧像素）。
 
 用法:
-    rakkord-imecaret.py [--socket PATH] [--verbose]
-socket 默认 `$XDG_RUNTIME_DIR/rakkord-imecaret.sock`，可用 RAKKORD_IMECARET_SOCKET 覆盖。
+    muelsyse-imecaret.py [--socket PATH] [--verbose]
+socket 默认 `$XDG_RUNTIME_DIR/muelsyse-imecaret.sock`，可用 MUELSYSE_IMECARET_SOCKET 覆盖。
 """
 
 import argparse
@@ -43,7 +43,7 @@ IC_PATH_PREFIX = "/org/freedesktop/portal/inputcontext/"
 # 一个读得慢的客户端最多积压这么多字节，超过就断开它，绝不阻塞 DBus 主循环。
 MAX_CLIENT_BACKLOG = 64 * 1024
 
-log = logging.getLogger("rakkord-imecaret")
+log = logging.getLogger("muelsyse-imecaret")
 
 
 class CaretState:
@@ -332,13 +332,13 @@ class CaretSocket:
 
 
 def default_socket_path():
-    override = os.environ.get("RAKKORD_IMECARET_SOCKET")
+    override = os.environ.get("MUELSYSE_IMECARET_SOCKET")
     if override:
         return override
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime:
         raise SystemExit("XDG_RUNTIME_DIR 未设置，无法确定 socket 路径")
-    return os.path.join(runtime, "rakkord-imecaret.sock")
+    return os.path.join(runtime, "muelsyse-imecaret.sock")
 
 
 def main(argv=None):

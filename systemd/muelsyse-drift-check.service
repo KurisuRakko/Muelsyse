@@ -1,0 +1,10 @@
+[Unit]
+Description=Muelsyse 只读漂移检查（仓库 manifest 对比生产）
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/libexec/muelsyse-check-drift --manifest %h/Collection/Muelsyse/deploy/manifest.tsv
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=256M
+MemorySwapMax=0

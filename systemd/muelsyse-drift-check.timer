@@ -1,5 +1,5 @@
 [Unit]
-Description=每天跑一次 RakkoRD 漂移检查
+Description=每天跑一次 Muelsyse 漂移检查
 
 [Timer]
 OnCalendar=*-*-* 07:50:00

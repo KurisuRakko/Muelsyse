@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rakkord-sunshine-nvenc-prep.sh —— Sunshine 的 ExecStartPre（任务 007 版：模式自适应）。
+# muelsyse-sunshine-nvenc-prep.sh —— Sunshine 的 ExecStartPre（任务 007 版：模式自适应）。
 #
 # 每次启动前把 ~/.config/sunshine/sunshine.conf 的两个键校正到"当前这台机器此刻的
 # 真实状态"，然后退出（永远 exit 0，绝不阻塞 Sunshine 启动）：
@@ -42,7 +42,7 @@ set -uo pipefail
 CONF="${SUNSHINE_CONF:-$HOME/.config/sunshine/sunshine.conf}"
 LIBEXEC="${SELKIES_LIBEXEC_DIR:-$HOME/.local/libexec}"
 
-[ -w "$CONF" ] || { echo "rakkord-sunshine-nvenc-prep: $CONF 不可写，跳过。" >&2; exit 0; }
+[ -w "$CONF" ] || { echo "muelsyse-sunshine-nvenc-prep: $CONF 不可写，跳过。" >&2; exit 0; }
 
 get_key() {
     sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p" "$CONF" | head -n1
@@ -62,7 +62,7 @@ if [ -r "$LIBEXEC/dri-node-resolve.sh" ]; then
     mode="$(dri_mode 2>/dev/null || echo unknown)"
     nvidia_ready() { dri_nvidia_userspace_ready; }
 else
-    echo "rakkord-sunshine-nvenc-prep: 找不到 $LIBEXEC/dri-node-resolve.sh，adapter_name 保持原值、encoder 只能按环境变量决定。" >&2
+    echo "muelsyse-sunshine-nvenc-prep: 找不到 $LIBEXEC/dri-node-resolve.sh，adapter_name 保持原值、encoder 只能按环境变量决定。" >&2
 fi
 
 # ---- 0. 设备节点自愈（模块已加载但节点缺失时才动手） ----
@@ -70,9 +70,9 @@ if [ -d /sys/module/nvidia ]; then
     missing=0
     for d in /dev/nvidiactl /dev/nvidia0 /dev/nvidia-uvm; do [ -c "$d" ] || missing=1; done
     if [ "$missing" = 1 ] && [ -x /usr/bin/nvidia-modprobe ]; then
-        echo "rakkord-sunshine-nvenc-prep: NVIDIA 设备节点不全，调用 nvidia-modprobe 补齐。"
-        /usr/bin/nvidia-modprobe -c 0 -c 255 || echo "rakkord-sunshine-nvenc-prep: nvidia-modprobe -c 0 -c 255 失败。" >&2
-        /usr/bin/nvidia-modprobe -u -c 0     || echo "rakkord-sunshine-nvenc-prep: nvidia-modprobe -u -c 0 失败。" >&2
+        echo "muelsyse-sunshine-nvenc-prep: NVIDIA 设备节点不全，调用 nvidia-modprobe 补齐。"
+        /usr/bin/nvidia-modprobe -c 0 -c 255 || echo "muelsyse-sunshine-nvenc-prep: nvidia-modprobe -c 0 -c 255 失败。" >&2
+        /usr/bin/nvidia-modprobe -u -c 0     || echo "muelsyse-sunshine-nvenc-prep: nvidia-modprobe -u -c 0 失败。" >&2
     fi
 fi
 
@@ -107,7 +107,7 @@ case "$mode_env" in
             want_encoder=nvenc
         else
             want_encoder=vaapi
-            echo "rakkord-sunshine-nvenc-prep: NVIDIA 用户态未就绪（需 /dev/nvidiactl、/dev/nvidia0、/dev/nvidia-uvm、libcuda.so.1、libnvidia-encode.so.1），encoder 用 vaapi。"
+            echo "muelsyse-sunshine-nvenc-prep: NVIDIA 用户态未就绪（需 /dev/nvidiactl、/dev/nvidia0、/dev/nvidia-uvm、libcuda.so.1、libnvidia-encode.so.1），encoder 用 vaapi。"
         fi
         ;;
 esac
@@ -118,39 +118,39 @@ esac
 if [ "$mode" = nvidia ] && [ "$want_encoder" = nvenc ]; then
     nv_card="$(dri_card_node_of_vendor 0x10de 2>/dev/null || true)"
     if [ -n "$nv_card" ]; then
-        echo "rakkord-sunshine-nvenc-prep: nvidia 模式，NVIDIA card 节点 $nv_card 在场（NVENC_GL 零拷贝路径可用）。"
+        echo "muelsyse-sunshine-nvenc-prep: nvidia 模式，NVIDIA card 节点 $nv_card 在场（NVENC_GL 零拷贝路径可用）。"
     else
-        echo "rakkord-sunshine-nvenc-prep: nvidia 模式，但没有 NVIDIA card 节点（nvidia-drm 未以 modeset=1 加载？）—— NVENC 仍可用，但 DMA-BUF 转 CUDA 的零拷贝路径会退化。" >&2
+        echo "muelsyse-sunshine-nvenc-prep: nvidia 模式，但没有 NVIDIA card 节点（nvidia-drm 未以 modeset=1 加载？）—— NVENC 仍可用，但 DMA-BUF 转 CUDA 的零拷贝路径会退化。" >&2
     fi
 fi
 
 case "$mode" in
-    nvidia) [ -z "$render_nvidia" ] && echo "rakkord-sunshine-nvenc-prep: nvidia 模式但解析不到 NVIDIA render 节点，adapter_name 保持原值 ${cur_adapter:-<空>}。" >&2 ;;
-    intel)  [ -z "$render_intel" ]  && echo "rakkord-sunshine-nvenc-prep: intel 模式但解析不到 Intel render 节点，adapter_name 保持原值 ${cur_adapter:-<空>}。" >&2 ;;
+    nvidia) [ -z "$render_nvidia" ] && echo "muelsyse-sunshine-nvenc-prep: nvidia 模式但解析不到 NVIDIA render 节点，adapter_name 保持原值 ${cur_adapter:-<空>}。" >&2 ;;
+    intel)  [ -z "$render_intel" ]  && echo "muelsyse-sunshine-nvenc-prep: intel 模式但解析不到 Intel render 节点，adapter_name 保持原值 ${cur_adapter:-<空>}。" >&2 ;;
 esac
 if ! has_key adapter_name; then
     want_adapter="$cur_adapter"
-    echo "rakkord-sunshine-nvenc-prep: $CONF 里没有 adapter_name 键，不新增。" >&2
+    echo "muelsyse-sunshine-nvenc-prep: $CONF 里没有 adapter_name 键，不新增。" >&2
 fi
 if ! has_key encoder; then
     want_encoder="$cur_encoder"
-    echo "rakkord-sunshine-nvenc-prep: $CONF 里没有 encoder 键，不新增。" >&2
+    echo "muelsyse-sunshine-nvenc-prep: $CONF 里没有 encoder 键，不新增。" >&2
 fi
 
 # ---- 2. 幂等：没变化就直接退出 ----
 if [ "$cur_adapter" = "$want_adapter" ] && [ "$cur_encoder" = "$want_encoder" ]; then
-    echo "rakkord-sunshine-nvenc-prep: 无需改动（mode=$mode, encoder=$cur_encoder, adapter_name=$cur_adapter）。"
+    echo "muelsyse-sunshine-nvenc-prep: 无需改动（mode=$mode, encoder=$cur_encoder, adapter_name=$cur_adapter）。"
     exit 0
 fi
 
 # ---- 3. 备份（只在第一次改动前留一份，之后不覆盖） ----
 bak="$CONF.bak-before-nvenc-prep"
 if [ ! -e "$bak" ]; then
-    cp -p "$CONF" "$bak" && echo "rakkord-sunshine-nvenc-prep: 备份原配置 -> $bak"
+    cp -p "$CONF" "$bak" && echo "muelsyse-sunshine-nvenc-prep: 备份原配置 -> $bak"
 fi
 
 # ---- 4. 一次 awk 改写 + rename（原子，不出现改了一半） ----
-tmp="$(mktemp "$CONF.tmp-XXXXXX")" || { echo "rakkord-sunshine-nvenc-prep: mktemp 失败，跳过。" >&2; exit 0; }
+tmp="$(mktemp "$CONF.tmp-XXXXXX")" || { echo "muelsyse-sunshine-nvenc-prep: mktemp 失败，跳过。" >&2; exit 0; }
 trap 'rm -f "$tmp"' EXIT
 
 awk -v adapter="$want_adapter" -v encoder="$want_encoder" '
@@ -163,13 +163,13 @@ awk -v adapter="$want_adapter" -v encoder="$want_encoder" '
         }
         print
     }
-' "$CONF" > "$tmp" || { echo "rakkord-sunshine-nvenc-prep: awk 改写失败，保持原文件。" >&2; exit 0; }
+' "$CONF" > "$tmp" || { echo "muelsyse-sunshine-nvenc-prep: awk 改写失败，保持原文件。" >&2; exit 0; }
 
 chmod --reference="$CONF" "$tmp" 2>/dev/null || chmod 0644 "$tmp"
 chown --reference="$CONF" "$tmp" 2>/dev/null || true
-mv -f "$tmp" "$CONF" || { echo "rakkord-sunshine-nvenc-prep: mv 覆盖失败，保持原文件。" >&2; exit 0; }
+mv -f "$tmp" "$CONF" || { echo "muelsyse-sunshine-nvenc-prep: mv 覆盖失败，保持原文件。" >&2; exit 0; }
 trap - EXIT
 
-[ "$cur_adapter" != "$want_adapter" ] && echo "rakkord-sunshine-nvenc-prep: adapter_name: ${cur_adapter:-<空>} -> $want_adapter"
-[ "$cur_encoder" != "$want_encoder" ] && echo "rakkord-sunshine-nvenc-prep: encoder: ${cur_encoder:-<空>} -> $want_encoder"
+[ "$cur_adapter" != "$want_adapter" ] && echo "muelsyse-sunshine-nvenc-prep: adapter_name: ${cur_adapter:-<空>} -> $want_adapter"
+[ "$cur_encoder" != "$want_encoder" ] && echo "muelsyse-sunshine-nvenc-prep: encoder: ${cur_encoder:-<空>} -> $want_encoder"
 exit 0

@@ -1,5 +1,5 @@
 #!/bin/bash
-# End-to-end test for rakkord-sunshine-input-bridge.
+# End-to-end test for muelsyse-sunshine-input-bridge.
 #
 # Starts a fresh bridge + a Wayland input probe (fullscreen surface that prints
 # every input event KWin delivers) and drives both with throw-away uinput
@@ -14,7 +14,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 sleep 0.5
 
-"$HOME/.local/libexec/rakkord-sunshine-input-bridge" --trace > "$out/bridge-trace.log" 2>&1 &
+"$HOME/.local/libexec/muelsyse-sunshine-input-bridge" --trace > "$out/bridge-trace.log" 2>&1 &
 bridepid=$!
 sleep 1
 "$dir/wl-input-probe" 70 > "$out/probe.log" 2>&1 &

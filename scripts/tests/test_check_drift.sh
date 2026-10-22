@@ -42,16 +42,16 @@ printf '[Service]\nNice=5\n' >"$repo/systemd/remote-desktop-selkies.service"
 printf '#!/bin/sh\necho repo\n' >"$repo/scripts/dri-node-resolve.sh"
 printf '#!/bin/sh\necho mode\n' >"$repo/scripts/selkies-dri-exec.sh"
 printf 'TEMPLATE=@HOME@\n' >"$repo/system/env.in"
-printf '[Service]\nExecStart=/bin/true\n' >"$repo/systemd/rakkord-imecaret.service"
-printf '# 注释\nip saddr @RAKKORD_LAN_CIDR@ tcp dport @RAKKORD_PORT@ accept\n\ntcp dport 8444 accept\n' >"$repo/system/fw.nft"
-# render：占位符展开后再比；@RAKKORD_PORT@ 走内置默认 8090，@RAKKORD_LAN_CIDR@ 来自主机 env 文件
-printf '[Unit]\nConditionUser=@USER@\n[Service]\nExecStart=@HOME@/bin/x\nEnvironment=XDG_RUNTIME_DIR=/run/user/@UID@ G=@GROUP@ P=@RAKKORD_PORT@\nEnvironment=MAIL=a@example.com@x\n' >"$repo/systemd/render.service"
-printf 'listen @RAKKORD_UNSET_THING@\n' >"$repo/system/needs-var.conf"
+printf '[Service]\nExecStart=/bin/true\n' >"$repo/systemd/muelsyse-imecaret.service"
+printf '# 注释\nip saddr @MUELSYSE_LAN_CIDR@ tcp dport @MUELSYSE_PORT@ accept\n\ntcp dport 8444 accept\n' >"$repo/system/fw.nft"
+# render：占位符展开后再比；@MUELSYSE_PORT@ 走内置默认 8090，@MUELSYSE_LAN_CIDR@ 来自主机 env 文件
+printf '[Unit]\nConditionUser=@USER@\n[Service]\nExecStart=@HOME@/bin/x\nEnvironment=XDG_RUNTIME_DIR=/run/user/@UID@ G=@GROUP@ P=@MUELSYSE_PORT@\nEnvironment=MAIL=a@example.com@x\n' >"$repo/systemd/render.service"
+printf 'listen @MUELSYSE_UNSET_THING@\n' >"$repo/system/needs-var.conf"
 printf 'int main(void){return 0;}\n' >"$repo/src/thing/main.c"
 
 # 生产侧
-mkdir -p "$home/.config/rakkord"
-printf '# 主机参数\nRAKKORD_LAN_CIDR="198.51.100.0/24"\nexport RAKKORD_EXTRA=1\n' >"$home/.config/rakkord/env"
+mkdir -p "$home/.config/muelsyse"
+printf '# 主机参数\nMUELSYSE_LAN_CIDR="198.51.100.0/24"\nexport MUELSYSE_EXTRA=1\n' >"$home/.config/muelsyse/env"
 me=$(id -un); my_uid=$(id -u); my_group=$(id -gn)
 rendered_service="[Unit]
 ConditionUser=$me
@@ -86,7 +86,7 @@ tab=$'\t'
     echo "scripts/dri-node-resolve.sh${tab}~/.local/libexec/dri-node-resolve.sh${tab}0755${tab}user${tab}copy${tab}selkies"
     echo "scripts/selkies-dri-exec.sh${tab}~/.local/libexec/selkies-dri-exec.sh${tab}0755${tab}user${tab}copy${tab}selkies"
     echo "system/env.in${tab}~/.config/remote-desktop.env${tab}0644${tab}user${tab}template${tab}session"
-    echo "systemd/rakkord-imecaret.service${tab}~/.config/systemd/user/rakkord-imecaret.service${tab}0644${tab}user${tab}template${tab}unit:rakkord-imecaret.service"
+    echo "systemd/muelsyse-imecaret.service${tab}~/.config/systemd/user/muelsyse-imecaret.service${tab}0644${tab}user${tab}template${tab}unit:muelsyse-imecaret.service"
     echo "system/fw.nft${tab}~/etc/fw-ok.conf${tab}0644${tab}user${tab}check${tab}nft-reload"
     echo "system/fw.nft${tab}~/etc/fw-bad.conf${tab}0644${tab}user${tab}check${tab}nft-reload"
     echo "src/thing${tab}~/.local/bin/thing${tab}0755${tab}user${tab}build${tab}none"
@@ -98,7 +98,7 @@ printf '~/.local/libexec/selkies-old-wrapper\tscripts/selkies-dri-exec.sh\t旧�
 
 run() {
     set +e
-    out=$(RAKKORD_DRIFT_HOME="$home" "$checker" --no-runtime --manifest "$repo/deploy/manifest.tsv" "$@" 2>&1)
+    out=$(MUELSYSE_DRIFT_HOME="$home" "$checker" --no-runtime --manifest "$repo/deploy/manifest.tsv" "$@" 2>&1)
     rc=$?
     set -e
 }
@@ -110,7 +110,7 @@ echo "----------------------------------"
 expect_line "$out" SAME "~/.config/systemd/user/remote-desktop-wayland.service"
 expect_line "$out" DRIFT "~/.config/systemd/user/remote-desktop-selkies.service"
 expect_line "$out" MISSING "~/.local/libexec/dri-node-resolve.sh"
-expect_line "$out" MISSING "~/.config/systemd/user/rakkord-imecaret.service"
+expect_line "$out" MISSING "~/.config/systemd/user/muelsyse-imecaret.service"
 expect_line "$out" MODE "~/.local/libexec/selkies-dri-exec.sh"
 expect_line "$out" TEMPLATE_OK "~/.config/remote-desktop.env"
 expect_line "$out" CHECK_OK "~/etc/fw-ok.conf"
@@ -119,7 +119,7 @@ expect_line "$out" BUILD_STALE "~/.local/bin/thing"
 expect_line "$out" SAME "~/.config/systemd/user/render-same.service"
 expect_line "$out" DRIFT "~/.config/systemd/user/render-raw.service"
 expect_line "$out" RENDER_FAIL "~/etc/needs-var.conf"
-grep -q '^RENDER_FAIL .*RAKKORD_UNSET_THING' <<<"$out" && ok "RENDER_FAIL 点名缺的变量" || bad "RENDER_FAIL 没说缺哪个变量"
+grep -q '^RENDER_FAIL .*MUELSYSE_UNSET_THING' <<<"$out" && ok "RENDER_FAIL 点名缺的变量" || bad "RENDER_FAIL 没说缺哪个变量"
 expect_line "$out" RETIRED_PRESENT "~/.local/libexec/selkies-old-wrapper"
 expect_line "$out" UNMANAGED "~/.local/libexec/sunshine-extra.sh"
 expect_line "$out" UNMANAGED "~/.config/systemd/user/remote-desktop-wayland.service.d/extra.conf"
@@ -138,28 +138,28 @@ expect_no_line "$out" "^(SAME|TEMPLATE_OK|CHECK_OK) "
 
 # --render 把文件展开到 stdout，与漂移检查用的是同一份结果
 set +e
-render_out=$(RAKKORD_DRIFT_HOME="$home" "$checker" --render "$repo/systemd/render.service")
+render_out=$(MUELSYSE_DRIFT_HOME="$home" "$checker" --render "$repo/systemd/render.service")
 rc=$?
 set -e
 [[ $rc -eq 0 && "$render_out" == "$rendered_service" ]] && ok "--render 输出展开结果" || { bad "--render 输出不对（rc=$rc）"; echo "$render_out"; }
 set +e
-RAKKORD_DRIFT_HOME="$home" "$checker" --render "$repo/system/needs-var.conf" >/dev/null 2>&1
+MUELSYSE_DRIFT_HOME="$home" "$checker" --render "$repo/system/needs-var.conf" >/dev/null 2>&1
 rc=$?
 set -e
 [[ $rc -eq 2 ]] && ok "--render 缺变量退出码 2" || bad "--render 缺变量退出码应为 2，实际 $rc"
 set +e
-RAKKORD_ENV_FILE="$work/nope.env" RAKKORD_DRIFT_HOME="$home" "$checker" --render "$repo/system/fw.nft" >/dev/null 2>&1
+MUELSYSE_ENV_FILE="$work/nope.env" MUELSYSE_DRIFT_HOME="$home" "$checker" --render "$repo/system/fw.nft" >/dev/null 2>&1
 rc=$?
 set -e
-[[ $rc -eq 2 ]] && ok "RAKKORD_ENV_FILE 指向别处时不读 HOME 下的 env" || bad "RAKKORD_ENV_FILE 没生效，退出码 $rc"
+[[ $rc -eq 2 ]] && ok "MUELSYSE_ENV_FILE 指向别处时不读 HOME 下的 env" || bad "MUELSYSE_ENV_FILE 没生效，退出码 $rc"
 
 # 修好所有失败项，只剩 JUNK → 退出码 0
-printf 'RAKKORD_UNSET_THING=x\n' >>"$home/.config/rakkord/env"
+printf 'MUELSYSE_UNSET_THING=x\n' >>"$home/.config/muelsyse/env"
 printf '%s\n' "$rendered_service" >"$home/.config/systemd/user/render-raw.service"
 cp "$repo/systemd/remote-desktop-selkies.service" "$home/.config/systemd/user/remote-desktop-selkies.service"
 chmod 644 "$home/.config/systemd/user/remote-desktop-selkies.service"
 cp "$repo/scripts/dri-node-resolve.sh" "$home/.local/libexec/" && chmod 755 "$home/.local/libexec/dri-node-resolve.sh"
-cp "$repo/systemd/rakkord-imecaret.service" "$home/.config/systemd/user/" && chmod 644 "$home/.config/systemd/user/rakkord-imecaret.service"
+cp "$repo/systemd/muelsyse-imecaret.service" "$home/.config/systemd/user/" && chmod 644 "$home/.config/systemd/user/muelsyse-imecaret.service"
 chmod 755 "$home/.local/libexec/selkies-dri-exec.sh"
 cp "$home/etc/fw-ok.conf" "$home/etc/fw-bad.conf"
 touch "$home/.local/bin/thing"
@@ -174,13 +174,13 @@ tail -n1 <<<"$out" | grep -q '^SUMMARY result=OK ' && ok "汇总 OK" || bad "汇
 run --bogus
 [[ $rc -eq 2 ]] && ok "未知参数退出码 2" || bad "未知参数退出码应为 2，实际 $rc"
 set +e
-RAKKORD_DRIFT_HOME="$home" "$checker" --no-runtime --manifest "$work/nope.tsv" >/dev/null 2>&1
+MUELSYSE_DRIFT_HOME="$home" "$checker" --no-runtime --manifest "$work/nope.tsv" >/dev/null 2>&1
 rc=$?
 set -e
 [[ $rc -eq 2 ]] && ok "manifest 不存在退出码 2" || bad "manifest 不存在退出码应为 2，实际 $rc"
 printf 'a\tb\tc\n' >"$work/broken.tsv"
 set +e
-RAKKORD_DRIFT_HOME="$home" "$checker" --no-runtime --manifest "$work/broken.tsv" >/dev/null 2>&1
+MUELSYSE_DRIFT_HOME="$home" "$checker" --no-runtime --manifest "$work/broken.tsv" >/dev/null 2>&1
 rc=$?
 set -e
 [[ $rc -eq 2 ]] && ok "manifest 列数不对退出码 2" || bad "manifest 列数不对退出码应为 2，实际 $rc"

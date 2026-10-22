@@ -1,6 +1,6 @@
 # Muelsyse
 
-*[中文版](README.zh-CN.md) · Formerly RakkoRD; named after Muelsyse from* Arknights*, who sends water clones of herself to work somewhere else.*
+*[中文版](README.zh-CN.md)*
 
 A remote desktop built on KDE Plasma Wayland and [Selkies](https://github.com/selkies-project/selkies):
 capture a real KWin session over PipeWire/DMA-BUF, encode it with
@@ -139,7 +139,7 @@ The changes fall into these themes:
 4. **Input.** Wheel and touchpad scrolling send fractional axis deltas
    (`ws,<dx>,<dy>`), eased per frame on the client, instead of whole
    clicks every 100 ms; KWin `fake_input` takes `wl_fixed` axis values, so
-   only X11/uinput still rounds to clicks. `scripts/rakkord-imecaret.py`
+   only X11/uinput still rounds to clicks. `scripts/muelsyse-imecaret.py`
    learns the focused Qt app's caret rectangle over the fcitx D-Bus portal
    and `selkies/src/selkies/ime_caret.py` relays it, so the browser's IME
    candidate window follows the remote text cursor. Touch gestures and

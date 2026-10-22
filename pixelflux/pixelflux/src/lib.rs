@@ -357,7 +357,7 @@ pub mod pipeline;
 pub mod x11;
 /// Multi-GPU NVENC device filtering via kernel ioctl.
 pub mod nvgpufilter;
-/// Per-second host-capture pipeline counters behind `RAKKORD_PERF`.
+/// Per-second host-capture pipeline counters behind `MUELSYSE_PERF`.
 pub mod perf;
 
 pub mod webcam;

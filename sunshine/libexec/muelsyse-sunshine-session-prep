@@ -15,7 +15,7 @@
 set -u
 
 SITE=@HOME@/.local/share/remote-desktop/selkies-kwin/site
-export PYTHONPATH="$SITE:/opt/selkies/lib/python3.13/site-packages"
+export PYTHONPATH="$SITE:@MUELSYSE_SELKIES_VENV@/lib/python3.13/site-packages"
 export XDG_RUNTIME_DIR=/run/user/@UID@
 
 # 按用户偏好设置光标由谁画（见 sunshine-cursor）。
@@ -53,7 +53,7 @@ fit_resolution() {
     # 2026-09-19 实测：用 kscreen-doctor 把 scale 设成 2，而 Selkies 读回来的
     # realized geometry 仍是 scale 1.0，两边按不同 scale 算同一块缓冲区，
     # pixelflux 直接 munmap_chunk(): invalid pointer → SIGABRT，
-    # Selkies 反复崩溃重启，@RAKKORD_PUBLIC_HOST@ 一直 502。
+    # Selkies 反复崩溃重启，@MUELSYSE_PUBLIC_HOST@ 一直 502。
     # 输出归 Selkies 管；只有它确实停了（selkies-policy=stop）才轮到我们调。
     if systemctl --user is-active --quiet remote-desktop-selkies.service; then
         printf '%s fit: skipped (selkies running, output is its to manage)\n' \
@@ -104,7 +104,7 @@ case "${1:-do}" in
             "${SUNSHINE_CLIENT_FPS:-?}" "${SUNSHINE_CLIENT_HDR:-?}" \
             >> @HOME@/.config/sunshine/session-prep.log 2>/dev/null || true
         # 是否在 Moonlight 会话期间停掉 Selkies，由 ~/.config/sunshine/selkies-policy 决定。
-        # 默认 keep：停掉会让 cloudflared 后端消失，@RAKKORD_PUBLIC_HOST@ 直接 502。
+        # 默认 keep：停掉会让 cloudflared 后端消失，@MUELSYSE_PUBLIC_HOST@ 直接 502。
         # stop：省一份捕获开销（两个捕获流抢 GPU 时 Selkies 掉到过 4.6fps），但网页端不可用。
         if [ "$(cat @HOME@/.config/sunshine/selkies-policy 2>/dev/null || echo keep)" = "stop" ]; then
             /usr/bin/systemctl --user stop remote-desktop-selkies.service 2>/dev/null || true

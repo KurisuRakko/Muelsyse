@@ -180,9 +180,9 @@ SCROLL_AXIS_UNITS_PER_NOTCH = 10.0
 # Bound on one `ws` delta: twenty notches, more than a client eases into a frame.
 SMOOTH_SCROLL_MAX_UNITS = 200.0
 
-# RAKKORD_PERF：逐秒计量开关（非空且不是 "0" 即开），默认关。selkies.py 的
+# MUELSYSE_PERF：逐秒计量开关（非空且不是 "0" 即开），默认关。selkies.py 的
 # RD_PERF_SRV 行读这里的输入窗口；关时热路径上只多一次 bool 判断。
-RAKKORD_PERF = os.environ.get("RAKKORD_PERF", "") not in ("", "0")
+MUELSYSE_PERF = os.environ.get("MUELSYSE_PERF", "") not in ("", "0")
 # 相邻两条指针消息间隔超过这个值算一次新的拖动，不计入间隔分布：
 # 空闲几秒后的第一条消息会把 p95/max 拉成噪声。
 PERF_INPUT_GAP_CEILING_MS = 1000.0
@@ -8014,7 +8014,7 @@ class WebRTCInput:
                 if keysym in self.pressed_keys:
                     self.pressed_keys[keysym] = now
         elif msg_type in ["m", "m2"]:
-            if RAKKORD_PERF:
+            if MUELSYSE_PERF:
                 PERF_INPUT.note()
             relative = msg_type == "m2"
             # Dropped rather than defaulted: a default would warp to the origin.

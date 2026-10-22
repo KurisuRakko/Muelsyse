@@ -1,5 +1,5 @@
 # Sunshine (Moonlight) 以用户服务身份运行（账号 @USER@），需要写 /dev/uinput、/dev/uhid；
-# 中间人 rakkord-sunshine-input-bridge（sunshine/input-bridge）需要读 Sunshine 通过它们创建的虚拟输入设备。
+# 中间人 muelsyse-sunshine-input-bridge（sunshine/input-bridge）需要读 Sunshine 通过它们创建的虚拟输入设备。
 #
 # 发行版自带的 /usr/lib/udev/rules.d/60-sunshine.rules 依赖 TAG+="uaccess"，
 # 那套 ACL 需要 logind seat，而这台无头机器没有 seat，所以永远不会生效。

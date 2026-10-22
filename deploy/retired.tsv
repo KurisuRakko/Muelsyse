@@ -6,17 +6,36 @@
 #   note                  说明（删之前要做的事等）
 #
 # old_target	replaced_by_repo_path	note
-~/.config/systemd/user/sunshine-input-bridge.service	sunshine/systemd/rakkord-sunshine-input.service	先 disable --now 旧 unit，再 enable 新 unit
-~/.config/systemd/user/selkies-preempts-moonlight.service	sunshine/systemd/rakkord-moonlight-preempt.service	先 disable --now 旧 unit，再 enable 新 unit
-~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/nvenc-prep.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-nvenc-prep.conf	不删会让同一个 ExecStartPre 跑两遍（新旧名并存）
-~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/override.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-override.conf	内容相同的旧名 drop-in
-~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/session-wait.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-session-wait.conf	不删会让同一个 ExecStartPre 跑两遍（新旧名并存）
-~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/startup-watchdog.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-startup-watchdog.conf	不删会让同一个 ExecStartPost 跑两遍（新旧名并存）
-~/.local/libexec/sunshine-nvenc-prep.sh	sunshine/libexec/rakkord-sunshine-nvenc-prep.sh	旧 drop-in 删掉、daemon-reload 后再删
-~/.local/libexec/sunshine-port-wait.sh	sunshine/libexec/rakkord-sunshine-port-wait.sh	旧 drop-in 删掉、daemon-reload 后再删
-~/.local/libexec/sunshine-session-wait.sh	sunshine/libexec/rakkord-sunshine-session-wait.sh	旧 drop-in 删掉、daemon-reload 后再删
-~/.local/bin/sunshine-session-prep	sunshine/libexec/rakkord-sunshine-session-prep	sunshine.conf 的 global_prep_cmd 换成新路径并重启 Sunshine 后再删
-~/.local/bin/selkies-preempts-moonlight	sunshine/libexec/rakkord-moonlight-preempt	旧 unit 停掉后再删
-~/.local/bin/sunshine-input-bridge	sunshine/input-bridge	旧 unit 停掉后再删（二进制，新产物是 ~/.local/libexec/rakkord-sunshine-input-bridge）
-/etc/udev/rules.d/70-sunshine-input-rakko.rules	system/udev/70-rakkord-uinput.rules	root；新规则装好后删旧的，再 udevadm control --reload
-~/.local/share/applications/sunshine-input-bridge.desktop	sunshine/desktop/rakkord-sunshine-input-bridge.desktop	授权旧路径 ~/.local/bin/sunshine-input-bridge 的 fake_input；新 .desktop 装好、kbuildsycoca6 后再删
+~/.config/systemd/user/sunshine-input-bridge.service	sunshine/systemd/muelsyse-sunshine-input.service	先 disable --now 旧 unit，再 enable 新 unit
+~/.config/systemd/user/selkies-preempts-moonlight.service	sunshine/systemd/muelsyse-moonlight-preempt.service	先 disable --now 旧 unit，再 enable 新 unit
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/nvenc-prep.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-nvenc-prep.conf	不删会让同一个 ExecStartPre 跑两遍（新旧名并存）
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/override.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-override.conf	内容相同的旧名 drop-in
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/session-wait.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-session-wait.conf	不删会让同一个 ExecStartPre 跑两遍（新旧名并存）
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/startup-watchdog.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-startup-watchdog.conf	不删会让同一个 ExecStartPost 跑两遍（新旧名并存）
+~/.local/libexec/sunshine-nvenc-prep.sh	sunshine/libexec/muelsyse-sunshine-nvenc-prep.sh	旧 drop-in 删掉、daemon-reload 后再删
+~/.local/libexec/sunshine-port-wait.sh	sunshine/libexec/muelsyse-sunshine-port-wait.sh	旧 drop-in 删掉、daemon-reload 后再删
+~/.local/libexec/sunshine-session-wait.sh	sunshine/libexec/muelsyse-sunshine-session-wait.sh	旧 drop-in 删掉、daemon-reload 后再删
+~/.local/bin/sunshine-session-prep	sunshine/libexec/muelsyse-sunshine-session-prep	sunshine.conf 的 global_prep_cmd 换成新路径并重启 Sunshine 后再删
+~/.local/bin/selkies-preempts-moonlight	sunshine/libexec/muelsyse-moonlight-preempt	旧 unit 停掉后再删
+~/.local/bin/sunshine-input-bridge	sunshine/input-bridge	旧 unit 停掉后再删（二进制，新产物是 ~/.local/libexec/muelsyse-sunshine-input-bridge）
+/etc/udev/rules.d/70-sunshine-input-rakko.rules	system/udev/70-muelsyse-uinput.rules	root；新规则装好后删旧的，再 udevadm control --reload
+~/.local/share/applications/sunshine-input-bridge.desktop	sunshine/desktop/muelsyse-sunshine-input-bridge.desktop	授权旧路径 ~/.local/bin/sunshine-input-bridge 的 fake_input；新 .desktop 装好、kbuildsycoca6 后再删
+~/.config/systemd/user/rakkord-imecaret.service	systemd/muelsyse-imecaret.service	改名 Muelsyse：先 disable --now 旧 unit，再 enable 新 unit
+~/.local/libexec/rakkord-imecaret.py	scripts/muelsyse-imecaret.py	改名 Muelsyse：旧名文件
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-nvenc-prep.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-nvenc-prep.conf	改名 Muelsyse：不删会让同一个 ExecStartPre 跑两遍（新旧名并存）
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-override.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-override.conf	改名 Muelsyse：内容相同的旧名 drop-in
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-session-wait.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-session-wait.conf	改名 Muelsyse：不删会让同一个 ExecStartPre 跑两遍（新旧名并存）
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-startup-watchdog.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-startup-watchdog.conf	改名 Muelsyse：不删会让同一个 ExecStartPost 跑两遍（新旧名并存）
+~/.local/libexec/rakkord-sunshine-nvenc-prep.sh	sunshine/libexec/muelsyse-sunshine-nvenc-prep.sh	改名 Muelsyse：旧名文件
+~/.local/libexec/rakkord-sunshine-session-wait.sh	sunshine/libexec/muelsyse-sunshine-session-wait.sh	改名 Muelsyse：旧名文件
+~/.local/libexec/rakkord-sunshine-port-wait.sh	sunshine/libexec/muelsyse-sunshine-port-wait.sh	改名 Muelsyse：旧名文件
+~/.local/libexec/rakkord-sunshine-session-prep	sunshine/libexec/muelsyse-sunshine-session-prep	改名 Muelsyse：旧名文件
+~/.config/systemd/user/rakkord-sunshine-input.service	sunshine/systemd/muelsyse-sunshine-input.service	改名 Muelsyse：先 disable --now 旧 unit，再 enable 新 unit
+~/.local/libexec/rakkord-sunshine-input-bridge	sunshine/input-bridge	改名 Muelsyse：旧名文件
+~/.local/share/applications/rakkord-sunshine-input-bridge.desktop	sunshine/desktop/muelsyse-sunshine-input-bridge.desktop	改名 Muelsyse：旧名文件
+~/.config/systemd/user/rakkord-moonlight-preempt.service	sunshine/systemd/muelsyse-moonlight-preempt.service	改名 Muelsyse：先 disable --now 旧 unit，再 enable 新 unit
+~/.local/libexec/rakkord-moonlight-preempt	sunshine/libexec/muelsyse-moonlight-preempt	改名 Muelsyse：旧名文件
+/etc/udev/rules.d/70-rakkord-uinput.rules	system/udev/70-muelsyse-uinput.rules	改名 Muelsyse：旧名文件
+~/.local/libexec/rakkord-check-drift	scripts/check-drift.py	改名 Muelsyse：旧名文件
+~/.config/systemd/user/rakkord-drift-check.service	systemd/muelsyse-drift-check.service	改名 Muelsyse：先 disable --now 旧 unit，再 enable 新 unit
+~/.config/systemd/user/rakkord-drift-check.timer	systemd/muelsyse-drift-check.timer	改名 Muelsyse：先 disable --now 旧 unit，再 enable 新 unit

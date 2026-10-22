@@ -113,7 +113,7 @@ case "$MODE" in
     *)      bad "运行模式 = unknown：没有可用的 Intel 或 nvidia 驱动的 DRM 节点" "看 sudo rakko-gpu-mode status" ;;
 esac
 info "Intel  0000:00:02.0 -> ${INTEL_NODE:-<解析失败>}"
-info "NVIDIA 0000:01:00.0 -> ${NVIDIA_NODE:-<解析失败>}（card 节点：${NVIDIA_CARD:-<无>}）"
+info "NVIDIA ${DRI_NVIDIA_PCI:-0000:01:00.0} -> ${NVIDIA_NODE:-<解析失败>}（card 节点：${NVIDIA_CARD:-<无>}）"
 info "当前 /dev/dri: $(ls /dev/dri 2>/dev/null | tr '\n' ' ')"
 
 # 本模式期望的"渲染卡节点"（KWin 与 Selkies 都必须是它）
@@ -519,10 +519,10 @@ SUN_LOG="$HOME/.config/sunshine/sunshine.log"
 enc_cfg="$(sed -n 's/^[[:space:]]*encoder[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$SUN_CONF" 2>/dev/null | head -n1)"
 ada_cfg="$(sed -n 's/^[[:space:]]*adapter_name[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$SUN_CONF" 2>/dev/null | head -n1)"
 info "sunshine.conf: encoder=$enc_cfg  adapter_name=$ada_cfg"
-[ "$enc_cfg" = nvenc ] && ok "encoder = nvenc" || bad "encoder = $enc_cfg（预期 nvenc）" "看 $LIBEXEC/rakkord-sunshine-nvenc-prep.sh 的输出与 $SUN_CONF.bak-before-nvenc-prep"
+[ "$enc_cfg" = nvenc ] && ok "encoder = nvenc" || bad "encoder = $enc_cfg（预期 nvenc）" "看 $LIBEXEC/muelsyse-sunshine-nvenc-prep.sh 的输出与 $SUN_CONF.bak-before-nvenc-prep"
 if [ -n "$EXPECT_NODE" ]; then
     [ "$ada_cfg" = "$EXPECT_NODE" ] && ok "adapter_name 指向本模式的渲染卡（$EXPECT_NODE）" \
-        || bad "adapter_name=$ada_cfg，本模式预期 $EXPECT_NODE" "prep 会在下次 Sunshine 启动时改写；也可手动核对 $LIBEXEC/rakkord-sunshine-nvenc-prep.sh"
+        || bad "adapter_name=$ada_cfg，本模式预期 $EXPECT_NODE" "prep 会在下次 Sunshine 启动时改写；也可手动核对 $LIBEXEC/muelsyse-sunshine-nvenc-prep.sh"
 else
     warn "期望节点未知，无法核对 adapter_name=$ada_cfg"
 fi

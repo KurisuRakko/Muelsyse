@@ -42,7 +42,7 @@ cp /usr/bin/socat "$proxbin"
 cat > "$proxdesk" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Wayland socket proxy (rakkord-sunshine-input-bridge reconnect test)
+Name=Wayland socket proxy (muelsyse-sunshine-input-bridge reconnect test)
 Exec=$proxbin
 X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input
 NoDisplay=true
@@ -60,7 +60,7 @@ socpid=$!
 pids+=("$socpid")
 sleep 0.5
 
-WAYLAND_DISPLAY=wayland-bridgeproxy "$HOME/.local/libexec/rakkord-sunshine-input-bridge" --trace > "$out/bridge-reconnect.log" 2>&1 &
+WAYLAND_DISPLAY=wayland-bridgeproxy "$HOME/.local/libexec/muelsyse-sunshine-input-bridge" --trace > "$out/bridge-reconnect.log" 2>&1 &
 bridepid=$!
 pids+=("$bridepid")
 

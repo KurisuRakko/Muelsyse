@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""RakkoRD 只读漂移检查：按 deploy/manifest.tsv 对比仓库和生产，报告漂移、未登记文件和运行态。
+"""Muelsyse 只读漂移检查：按 deploy/manifest.tsv 对比仓库和生产，报告漂移、未登记文件和运行态。
 
 用法:
     check-drift.py [--all] [--no-runtime] [--manifest PATH]
@@ -9,11 +9,11 @@
 `--all` 全打；最后一行是汇总。
 退出码：有 DRIFT/MISSING/MODE/CHECK_FAIL/BUILD_STALE/RETIRED_PRESENT/UNMANAGED/STALE → 1；
 只有 WARN/JUNK/SKIP → 0；用法或 manifest 格式错误 → 2。
-环境变量 RAKKORD_DRIFT_HOME 替代 $HOME 展开 `~`（测试用）。
+环境变量 MUELSYSE_DRIFT_HOME 替代 $HOME 展开 `~`（测试用）。
 
 占位符：kind=render 的文件和 kind=check 的片段在比较/安装前先展开 @NAME@。NAME 只认
-HOME（即上面的 home）、USER、GROUP、UID（当前用户），以及 RAKKORD_ 开头的变量，取值来自
-<home>/.config/rakkord/env（RAKKORD_ENV_FILE 可改路径；KEY=VALUE 每行一条，# 注释，
+HOME（即上面的 home）、USER、GROUP、UID（当前用户），以及 MUELSYSE_ 开头的变量，取值来自
+<home>/.config/muelsyse/env（MUELSYSE_ENV_FILE 可改路径；KEY=VALUE 每行一条，# 注释，
 值两端成对的引号会去掉，不做 $ 展开），没写的用 RENDER_DEFAULTS；还没值就报 RENDER_FAIL。
 本脚本纯只读：不写文件、不调 sudo、只用 systemctl 的 show 查询。
 """
@@ -39,14 +39,18 @@ STATUS_ORDER = [
     "BUILD_STALE", "RETIRED_PRESENT", "UNMANAGED", "STALE", "RENDER_FAIL", "JUNK", "WARN", "SKIP",
 ]
 KINDS = {"copy", "render", "template", "build", "check"}
-PLACEHOLDER_RE = re.compile(r"@(HOME|USER|GROUP|UID|RAKKORD_[A-Z0-9_]+)@")
+PLACEHOLDER_RE = re.compile(r"@(HOME|USER|GROUP|UID|MUELSYSE_[A-Z0-9_]+)@")
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# 主机 env 文件没写时的取值；要和 config/rakkord.env.example 里注释掉的默认值一致。
-# 网卡地址类（RAKKORD_LAN_BIND 等）没有通用默认，用到又没配就 RENDER_FAIL。
+# 主机 env 文件没写时的取值；要和 config/muelsyse.env.example 里注释掉的默认值一致。
+# 网卡地址类（MUELSYSE_LAN_BIND 等）没有通用默认，用到又没配就 RENDER_FAIL。
 RENDER_DEFAULTS = {
-    "RAKKORD_PORT": "8090",
-    "RAKKORD_SELKIES_VENV": "/opt/selkies",
-    "RAKKORD_AUTO_GPU": "intel",
+    "MUELSYSE_PORT": "8090",
+    "MUELSYSE_SELKIES_VENV": "/opt/selkies",
+    "MUELSYSE_AUTO_GPU": "intel",
+    "MUELSYSE_DRI_NODE": "/dev/dri/renderD128",
+    "MUELSYSE_SUNSHINE_OUTPUT": "HDMI-1",
+    "MUELSYSE_SUNSHINE_MODE": "1920x1080",
+    "MUELSYSE_SUNSHINE_RESTORE_MODE": "1920x1200",
 }
 RESTART_UNITS = {
     "session": "remote-desktop-wayland.service",
@@ -57,11 +61,11 @@ UNMANAGED_WHITELIST = ["~/.local/libexec/selkies-python3.13"]
 # (目录, 名字前缀)；前缀为空表示目录下全部
 UNMANAGED_SCAN = [
     ("~/.config/systemd/user", "remote-desktop-"),
-    ("~/.config/systemd/user", "rakkord-"),
+    ("~/.config/systemd/user", "muelsyse-"),
     ("~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d", ""),
     ("~/.local/libexec", "selkies"),
     ("~/.local/libexec", "dri-"),
-    ("~/.local/libexec", "rakkord-"),
+    ("~/.local/libexec", "muelsyse-"),
     ("~/.local/libexec", "sunshine"),
     ("~/.local/bin", "sunshine"),
     ("~/.local/bin", "selkies"),
@@ -78,7 +82,7 @@ class RenderError(Exception):
 
 # ---------- 占位符 ----------
 def env_file_path(home):
-    return os.environ.get("RAKKORD_ENV_FILE") or os.path.join(home, ".config/rakkord/env")
+    return os.environ.get("MUELSYSE_ENV_FILE") or os.path.join(home, ".config/muelsyse/env")
 
 
 def load_env_file(path):
@@ -110,7 +114,7 @@ def render_values(home):
     uid = os.getuid()
     pw = pwd.getpwuid(uid)
     values = dict(RENDER_DEFAULTS)
-    values.update({k: v for k, v in load_env_file(env_file_path(home)).items() if k.startswith("RAKKORD_")})
+    values.update({k: v for k, v in load_env_file(env_file_path(home)).items() if k.startswith("MUELSYSE_")})
     values.update({
         "HOME": home,
         "USER": pw.pw_name,
@@ -123,7 +127,7 @@ def render_values(home):
 def render_text(text, values):
     missing = sorted({m.group(1) for m in PLACEHOLDER_RE.finditer(text) if m.group(1) not in values})
     if missing:
-        raise RenderError("占位符没有值: " + ", ".join(missing) + "（在 ~/.config/rakkord/env 里设）")
+        raise RenderError("占位符没有值: " + ", ".join(missing) + "（在 ~/.config/muelsyse/env 里设）")
     return PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], text)
 
 
@@ -434,14 +438,14 @@ class Checker:
             with open(info_path, encoding="utf-8") as f:
                 info = dict(l.split("=", 1) for l in f.read().splitlines() if "=" in l)
         except FileNotFoundError:
-            self.emit("WARN", self.shorten(directory), f"{label} 未记录 RakkoRD 提交号（没有 BUILD-INFO）")
+            self.emit("WARN", self.shorten(directory), f"{label} 未记录 Muelsyse 提交号（没有 BUILD-INFO）")
             return
         except OSError:
             self.emit("SKIP", self.shorten(info_path), "读不了 BUILD-INFO")
             return
-        commit = info.get("rakkord_commit", "").strip()
+        commit = info.get("muelsyse_commit", "").strip()
         if not commit:
-            self.emit("WARN", self.shorten(info_path), f"{label} 的 BUILD-INFO 没有 rakkord_commit")
+            self.emit("WARN", self.shorten(info_path), f"{label} 的 BUILD-INFO 没有 muelsyse_commit")
         elif head is None:
             self.emit("SKIP", self.shorten(info_path), "取不到仓库 HEAD，未比较提交号")
         else:
@@ -572,13 +576,12 @@ def systemctl_show(scope, unit, props, unix=False):
 def default_manifest():
     here = os.path.dirname(os.path.realpath(__file__))
     in_repo = os.path.join(here, "..", "deploy", "manifest.tsv")
-    if os.path.isfile(in_repo):
-        return os.path.normpath(in_repo)
-    return os.path.expanduser("~/Collection/RakkoRD/deploy/manifest.tsv")
+    # 部署出去的副本不在仓库里，没有默认可推导，须显式传 --manifest（drift-check unit 总是传）
+    return os.path.normpath(in_repo)
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description="RakkoRD 只读漂移检查")
+    parser = argparse.ArgumentParser(description="Muelsyse 只读漂移检查")
     parser.add_argument("--all", action="store_true", help="连 SAME/TEMPLATE_OK/CHECK_OK 也打印")
     parser.add_argument("--no-runtime", action="store_true",
                         help="跳过 systemd/进程/BUILD-INFO/git 检查（测试用）")
@@ -589,7 +592,7 @@ def main(argv):
     except SystemExit as e:
         return 0 if e.code == 0 else 2
 
-    home = os.path.normpath(os.environ.get("RAKKORD_DRIFT_HOME") or os.path.expanduser("~"))
+    home = os.path.normpath(os.environ.get("MUELSYSE_DRIFT_HOME") or os.path.expanduser("~"))
     if args.render:
         try:
             data = render_file(args.render, render_values(home))

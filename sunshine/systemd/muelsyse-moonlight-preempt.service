@@ -7,7 +7,7 @@ Wants=remote-desktop-selkies.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/libexec/rakkord-moonlight-preempt
+ExecStart=%h/.local/libexec/muelsyse-moonlight-preempt
 Restart=always
 RestartSec=3
 

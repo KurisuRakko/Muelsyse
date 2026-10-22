@@ -42,7 +42,7 @@ Components, all under this repository:
   `--apply` installs and mirrors anything it overwrites into a
   timestamped backup directory; root-owned rows need `--system`.
   `scripts/check-drift.sh` compares the host against the same manifest
-  and `systemd/rakkord-drift-check.timer` runs it daily.
+  and `systemd/muelsyse-drift-check.timer` runs it daily.
 - `scripts/bootstrap-host.sh` — one-time host setup (dedicated Selkies Python, KWin config,
   cursor theme, browser launcher) that doesn't belong in the manifest.
 - `systemd/remote-desktop-wayland.service` +
@@ -86,7 +86,7 @@ development.
 
 ### Optional side paths
 
-- `scripts/rakkord-imecaret.py` + `systemd/rakkord-imecaret.service` —
+- `scripts/muelsyse-imecaret.py` + `systemd/muelsyse-imecaret.service` —
   reports the caret rectangle of the focused Qt app (over the fcitx
   D-Bus portal) so the browser's IME candidate window can follow it.
   Without it the client falls back to its own estimate.

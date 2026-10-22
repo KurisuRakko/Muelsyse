@@ -1,9 +1,9 @@
-# 把局域网地址 @RAKKORD_LAN_BIND@:@RAKKORD_PORT@ 转发到 Selkies 远程桌面的回环端口，
+# 把局域网地址 @MUELSYSE_LAN_BIND@:@MUELSYSE_PORT@ 转发到 Selkies 远程桌面的回环端口，
 # 还原 2026-09-16 卸载 wechat-selkies 容器后失去的内网入口。
 # 只做 TCP 转发，不终止 TLS，也不改 Host 头。
 
 [Unit]
-Description=局域网到 Selkies 远程桌面的 TCP 转发（@RAKKORD_LAN_BIND@:@RAKKORD_PORT@ -> 127.0.0.1:@RAKKORD_PORT@）
+Description=局域网到 Selkies 远程桌面的 TCP 转发（@MUELSYSE_LAN_BIND@:@MUELSYSE_PORT@ -> 127.0.0.1:@MUELSYSE_PORT@）
 After=network-online.target
 Wants=network-online.target
 # 后端 remote-desktop-selkies.service 是 @USER@ 的 user unit，系统单元无法对它排序。
@@ -11,9 +11,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 只绑 @RAKKORD_LAN_BIND@。Tailscale 那一路由 `tailscale serve --http=@RAKKORD_PORT@` 提供，
+# 只绑 @MUELSYSE_LAN_BIND@。Tailscale 那一路由 `tailscale serve --http=@MUELSYSE_PORT@` 提供，
 # 再绑一次会 EADDRINUSE。实际可达范围由 nftables 的 INPUT policy drop 决定：
-# 只有 @RAKKORD_LAN_CIDR@ 能进来。
+# 只有 @MUELSYSE_LAN_CIDR@ 能进来。
 ExecStart=/usr/local/bin/socat-selkies.sh
 Restart=always
 RestartSec=3

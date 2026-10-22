@@ -5,7 +5,7 @@
  */
 
 //! Per-second end-to-end counters for the KWin host-capture zero-copy path, enabled by a
-//! non-empty `RAKKORD_PERF` other than `0`.
+//! non-empty `MUELSYSE_PERF` other than `0`.
 //!
 //! Every recording call checks one cached flag first, so a disabled build pays a single
 //! branch per call site. The compositor thread's once-a-second log block drains everything
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::wayland::frontend::TickTrigger;
 
 static ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("RAKKORD_PERF").is_ok_and(|v| !v.is_empty() && v != "0")
+    std::env::var("MUELSYSE_PERF").is_ok_and(|v| !v.is_empty() && v != "0")
 });
 
 const MAX_SAMPLES: usize = 512;

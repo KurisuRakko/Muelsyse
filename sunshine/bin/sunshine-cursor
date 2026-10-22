@@ -7,12 +7,12 @@
 #            （Moonlight/GameStream 协议不传光标形状，Sunshine 也没实现）。
 #   remote → 服务端把光标合成进画面。形状永远正确，但跟手程度受网络延迟影响。
 #
-# 选择会记到 ~/.config/sunshine/cursor-mode，rakkord-sunshine-session-prep（~/.local/libexec）在每次
+# 选择会记到 ~/.config/sunshine/cursor-mode，muelsyse-sunshine-session-prep（~/.local/libexec）在每次
 # Moonlight 会话开始时照此设置，所以重连后保持不变。
 set -u
 
 SITE=@HOME@/.local/share/remote-desktop/selkies-kwin/site
-export PYTHONPATH="$SITE:/opt/selkies/lib/python3.13/site-packages"
+export PYTHONPATH="$SITE:@MUELSYSE_SELKIES_VENV@/lib/python3.13/site-packages"
 export XDG_RUNTIME_DIR=/run/user/@UID@
 PREF=@HOME@/.config/sunshine/cursor-mode
 

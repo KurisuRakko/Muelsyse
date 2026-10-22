@@ -13,12 +13,12 @@ fail() {
 grep -qE '^VERSION_ID="?13([.]|"|$)' /etc/os-release || fail "当前主机不是 Debian 13"
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-# shellcheck source=scripts/rakkord-env.sh
-source "$ROOT/scripts/rakkord-env.sh"
-rakkord_load_env
-SELKIES_VENV=${RAKKORD_SELKIES_VENV:-/opt/selkies}
-RESOLUTION=${RAKKORD_RESOLUTION:-3840x2160}
-[[ "$RESOLUTION" =~ ^([0-9]+)x([0-9]+)$ ]] || fail "RAKKORD_RESOLUTION 应是 宽x高: $RESOLUTION"
+# shellcheck source=scripts/muelsyse-env.sh
+source "$ROOT/scripts/muelsyse-env.sh"
+muelsyse_load_env
+SELKIES_VENV=${MUELSYSE_SELKIES_VENV:-/opt/selkies}
+RESOLUTION=${MUELSYSE_RESOLUTION:-3840x2160}
+[[ "$RESOLUTION" =~ ^([0-9]+)x([0-9]+)$ ]] || fail "MUELSYSE_RESOLUTION 应是 宽x高: $RESOLUTION"
 INITIAL_WIDTH=${BASH_REMATCH[1]}
 INITIAL_HEIGHT=${BASH_REMATCH[2]}
 BUILD_ROOT=${KWIN_MEDIA_POC_BUILD_ROOT:-$HOME/build/kwin-adapter}

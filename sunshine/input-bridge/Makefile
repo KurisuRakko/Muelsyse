@@ -1,4 +1,4 @@
-# rakkord-sunshine-input-bridge（源码目录 sunshine/input-bridge，产物装到 ~/.local/libexec）
+# muelsyse-sunshine-input-bridge（源码目录 sunshine/input-bridge，产物装到 ~/.local/libexec）
 CC      ?= cc
 CFLAGS  ?= -O2 -g -Wall -Wextra
 CFLAGS  += -ffile-prefix-map=$(CURDIR)=.
@@ -13,7 +13,7 @@ WAYLAND_LIBS   := $(shell pkg-config --libs wayland-client)
 
 PREFIX ?= $(HOME)/.local
 
-all: rakkord-sunshine-input-bridge test/uinput-dev test/wl-input-probe
+all: muelsyse-sunshine-input-bridge test/uinput-dev test/wl-input-probe
 
 fake-input-client-protocol.h: $(PROTO_XML)
 	$(WAYLAND_SCANNER) client-header $< $@
@@ -21,7 +21,7 @@ fake-input-client-protocol.h: $(PROTO_XML)
 fake-input-protocol.c: $(PROTO_XML)
 	$(WAYLAND_SCANNER) private-code $< $@
 
-rakkord-sunshine-input-bridge: bridge.c fake-input-client-protocol.h fake-input-protocol.c
+muelsyse-sunshine-input-bridge: bridge.c fake-input-client-protocol.h fake-input-protocol.c
 	$(CC) $(CFLAGS) $(WAYLAND_CFLAGS) -o $@ bridge.c fake-input-protocol.c $(WAYLAND_LIBS) $(LDFLAGS) -lm
 
 test/uinput-dev: test/uinput-dev.c
@@ -38,10 +38,10 @@ xdg-shell-protocol.c: $(XDG_SHELL_XML)
 test/wl-input-probe: test/wl-input-probe.c xdg-shell-client-protocol.h xdg-shell-protocol.c
 	$(CC) $(CFLAGS) $(WAYLAND_CFLAGS) -I. -o $@ test/wl-input-probe.c xdg-shell-protocol.c $(WAYLAND_LIBS) $(LDFLAGS) -lm
 
-install: rakkord-sunshine-input-bridge
-	install -Dm755 rakkord-sunshine-input-bridge $(DESTDIR)$(PREFIX)/libexec/rakkord-sunshine-input-bridge
+install: muelsyse-sunshine-input-bridge
+	install -Dm755 muelsyse-sunshine-input-bridge $(DESTDIR)$(PREFIX)/libexec/muelsyse-sunshine-input-bridge
 
 clean:
-	rm -f rakkord-sunshine-input-bridge test/uinput-dev test/wl-input-probe
+	rm -f muelsyse-sunshine-input-bridge test/uinput-dev test/wl-input-probe
 
 .PHONY: all install clean

@@ -9,8 +9,8 @@ anything outside that as untested.
 Paths, the deployment user and similar per-host values are meant to come
 from the environment rather than from the files themselves: scripts take
 `${VAR:-$HOME/...}` defaults, and manifest rows of kind `render` have
-`@HOME@`/`@USER@`/`@RAKKORD_*@` placeholders filled in by
-`scripts/deploy-host.sh` from `~/.config/rakkord/env`. Some files were
+`@HOME@`/`@USER@`/`@MUELSYSE_*@` placeholders filled in by
+`scripts/deploy-host.sh` from `~/.config/muelsyse/env`. Some files were
 copied verbatim from the author's host (the `system/` fragments, the
 Sunshine config, the isolated KWin bring-up scripts) and may still assume
 its layout, LAN range or GPU; read them before installing.
