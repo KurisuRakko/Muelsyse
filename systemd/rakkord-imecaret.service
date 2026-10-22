@@ -1,0 +1,21 @@
+# ~/.config/systemd/user/rakkord-imecaret.service
+# （仓库副本：systemd/rakkord-imecaret.service；脚本装在 ~/.local/libexec/rakkord-imecaret.py）
+#
+# 远程 app 输入光标位置传感器。占用 session bus 上的
+# org.freedesktop.portal.Fcitx，只记录 Qt app 报来的光标矩形，经
+# $XDG_RUNTIME_DIR/rakkord-imecaret.sock 推给 Selkies。不吃键、不上屏。
+# 和 KWin、Selkies 都没有依赖关系：任何一方重启，Qt 插件和 Selkies 都会自己重连。
+[Unit]
+Description=RakkoRD IME caret sensor (fcitx portal stub)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I %h/.local/libexec/rakkord-imecaret.py
+Restart=on-failure
+RestartSec=2
+MemoryMax=64M
+MemorySwapMax=0
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

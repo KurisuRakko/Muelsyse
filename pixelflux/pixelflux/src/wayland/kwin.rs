@@ -48,6 +48,10 @@ const MAX_WIDTH: i32 = 8192;
 const MAX_HEIGHT: i32 = 8192;
 // 两个有界在途 buffer：一个交给编码器时，另一个可接收下一帧。
 const KWIN_IN_FLIGHT_SLOTS: usize = 2;
+/// 向 KWin 要的 buffer 数（KWin 的上限）。KWin 默认只给 3 个，我们最多占
+/// `KWIN_IN_FLIGHT_SLOTS` 个，KWin 手里常常只剩 1 个；它还在回程（上一帧或
+/// cursor-only 帧）时，下一次重绘 dequeue 不到 buffer，整帧就丢了。
+const KWIN_STREAM_BUFFERS: i32 = 4;
 /// PipeWire 协商与帧路径的文本指标；探针不返回像素，也不读取 DMA-BUF 内容。
 #[derive(Clone, Debug, Default)]
 pub struct ProbeReport {
@@ -514,6 +518,7 @@ fn run_pipewire_capture(
             if stats_enabled {
                 stats_callbacks_for_process.fetch_add(1, Ordering::Relaxed);
             }
+            crate::perf::kwin_callback();
             let held_guard = &mut *held_for_process.lock().unwrap();
             if let Some(stop_reason @ (RunStop::Restart { .. } | RunStop::Idle)) =
                 drain_release(stream, &commands_for_process, held_guard, generation)
@@ -555,6 +560,7 @@ fn run_pipewire_capture(
                 == crate::wayland::host_cursor::FrameContent::CursorOnly
             {
                 unsafe { stream.queue_raw_buffer(raw) };
+                crate::perf::kwin_cursor_only();
                 if stats_enabled {
                     stats_cursor_only_for_process.fetch_add(1, Ordering::Relaxed);
                 }
@@ -601,6 +607,7 @@ fn run_pipewire_capture(
             let chosen = (0..KWIN_IN_FLIGHT_SLOTS).find(|candidate| !held_guard.contains_key(candidate));
             let Some(chosen) = chosen else {
                 unsafe { stream.queue_raw_buffer(raw) };
+                crate::perf::kwin_no_slot();
                 if stats_enabled {
                     stats_no_slot_for_process.fetch_add(1, Ordering::Relaxed);
                 }
@@ -608,6 +615,7 @@ fn run_pipewire_capture(
             };
             *slot = (chosen + 1) % KWIN_IN_FLIGHT_SLOTS;
             held_guard.insert(chosen, raw as usize);
+            crate::perf::kwin_video();
             if stats_enabled {
                 let count = stats_frames_for_process.fetch_add(1, Ordering::Relaxed) + 1;
                 if count % 300 == 0 {
@@ -655,9 +663,13 @@ fn run_pipewire_capture(
     let meta_params = make_cursor_meta_params()?;
     let pod = Pod::from_bytes(&params).ok_or("创建 KWin DMA-BUF 参数 Pod 失败")?;
     let meta_pod = Pod::from_bytes(&meta_params).ok_or("创建 KWin cursor meta 参数 Pod 失败")?;
-    // 只“增加”一条 Meta 请求：流属性与格式提案保持与原实现逐字节一致，否则 KWin
+    let buffers_params = make_buffers_params(KWIN_STREAM_BUFFERS)?;
+    let buffers_any_params = make_buffers_params(0)?;
+    let buffers_pod = Pod::from_bytes(&buffers_params).ok_or("创建 KWin buffers 参数 Pod 失败")?;
+    let buffers_any_pod = Pod::from_bytes(&buffers_any_params).ok_or("创建 KWin buffers 参数 Pod 失败")?;
+    // 只“增加”Meta 与 Buffers 请求：流属性与格式提案保持与原实现逐字节一致，否则 KWin
     // 的格式协商会以 "no more input formats" 失败。
-    let mut pods = [pod, meta_pod];
+    let mut pods = [pod, meta_pod, buffers_pod, buffers_any_pod];
     pw_stream
         .connect(
             spa::utils::Direction::Input,
@@ -1063,6 +1075,31 @@ fn make_cursor_meta_params() -> Result<Vec<u8>, String> {
     PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(object))
         .map(|serialized| serialized.0.into_inner())
         .map_err(|e| format!("序列化 cursor meta 参数失败: {e:?}"))
+}
+
+/// consumer 侧的 Buffers 提案：`at_least > 0` 时要求至少这么多个 buffer，与 KWin 的
+/// 区间求交后就是这个数；`0` 不设下限，作为 KWin 给不到时的退路，协商结果同默认。
+fn make_buffers_params(at_least: i32) -> Result<Vec<u8>, String> {
+    use pw::spa::pod::serialize::PodSerializer;
+    use pw::spa::pod::{ChoiceValue, Object, Property, Value};
+    use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags};
+    use std::io::Cursor;
+
+    let (default, min) = if at_least > 0 { (at_least, at_least) } else { (2, 1) };
+    let object = Object {
+        type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
+        id: spa::param::ParamType::Buffers.as_raw(),
+        properties: vec![Property::new(
+            spa::sys::SPA_PARAM_BUFFERS_buffers,
+            Value::Choice(ChoiceValue::Int(Choice(
+                ChoiceFlags::empty(),
+                ChoiceEnum::Range { default, min, max: 16 },
+            ))),
+        )],
+    };
+    PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(object))
+        .map(|serialized| serialized.0.into_inner())
+        .map_err(|e| format!("序列化 buffers 参数失败: {e:?}"))
 }
 
 #[cfg(test)]

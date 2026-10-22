@@ -1,0 +1,86 @@
+# RakkoRD 部署清单：仓库文件 → 主机目标。部署脚本与漂移检查共用的契约。
+#
+# 格式：每行 6 列，TAB 分隔；空行与 # 开头的行忽略。
+#   repo_path  相对仓库根的路径（build 行写源码目录）
+#   target     用户文件写 ~/...，root 文件写绝对路径；一个 target 只能出现一次
+#   mode       八进制权限，如 0644 / 0755 / 0600
+#   owner      user | root（root 行部署时需要 sudo）
+#   kind       copy      逐字节安装，漂移检查比内容
+#              render    同 copy，但先展开文件里的 @HOME@ @USER@ @GROUP@ @UID@ @RAKKORD_*@ 占位符
+#                        （主机值在 ~/.config/rakkord/env，样例 config/rakkord.env.example），
+#                        安装和漂移检查都按展开结果比；check 的片段也先展开
+#              template  只在目标不存在时安装；之后归主机所有，漂移检查只查存在性
+#              build     目标由构建产生（repo_path 是源码目录），漂移检查只查存在性与新旧
+#              check     不安装，只检查 target 里是否包含 repo_path 的规则行（片段）
+#   restart    改了这一行之后要做什么才生效：
+#              session              重启 remote-desktop-wayland（会关掉所有窗口）
+#              selkies              只重启 remote-desktop-selkies
+#              unit:<名>            重启该 user unit
+#              system-unit:<名>     重启该 system unit
+#              udev-reload          udevadm control --reload && udevadm trigger
+#              nft-reload           nft -c 校验后 reload nftables（check 行指人工修好之后）
+#              reboot               需要重启机器
+#              none                 无需动作
+#   改了 unit / drop-in 时，部署脚本还要先 systemctl [--user] daemon-reload。
+#
+# 不在本清单里、另有脚本管理的部署物：
+#   ~/.local/libexec/selkies-python3.13（安装脚本从系统 python 复制的解释器）、
+#   KWin prefix（~/build/... 的 kwin_wayland / libkwin / 插件）、
+#   Selkies release（~/.local/share/remote-desktop/selkies-kwin/releases/* 与 site 软链）。
+# 改名后应从主机删除的旧路径见 deploy/retired.tsv；unit 的 enable 状态见 deploy/units.tsv。
+#
+# repo_path	target	mode	owner	kind	restart
+
+# --- 会话：KWin Wayland（remote-desktop-wayland）---
+systemd/remote-desktop-wayland.service	~/.config/systemd/user/remote-desktop-wayland.service	0644	user	render	session
+systemd/remote-desktop-wayland.service.d/cursor-shape-only.conf	~/.config/systemd/user/remote-desktop-wayland.service.d/cursor-shape-only.conf	0644	user	copy	session
+systemd/remote-desktop-wayland.service.d/upholds-selkies.conf	~/.config/systemd/user/remote-desktop-wayland.service.d/upholds-selkies.conf	0644	user	render	session
+scripts/start-wayland-session.sh	~/.local/libexec/selkies-wayland-session	0755	user	copy	session
+scripts/selkies-xwayland-listen.py	~/.local/libexec/selkies-xwayland-listen.py	0755	user	copy	session
+config/environment.d/10-remote-desktop-session.conf	~/.config/environment.d/10-remote-desktop-session.conf	0644	user	render	session
+desktop/selkies-kwin-wayland.desktop	~/.local/share/applications/selkies-kwin-wayland.desktop	0644	user	render	none
+
+# --- Selkies（remote-desktop-selkies）---
+systemd/remote-desktop-selkies.service	~/.config/systemd/user/remote-desktop-selkies.service	0644	user	render	selkies
+systemd/remote-desktop-selkies.service.d/dri-node.conf	~/.config/systemd/user/remote-desktop-selkies.service.d/dri-node.conf	0644	user	copy	selkies
+systemd/remote-desktop-selkies.service.d/no-x11-display.conf	~/.config/systemd/user/remote-desktop-selkies.service.d/no-x11-display.conf	0644	user	render	selkies
+scripts/selkies-dri-exec.sh	~/.local/libexec/selkies-dri-exec.sh	0755	user	copy	selkies
+scripts/dri-node-resolve.sh	~/.local/libexec/dri-node-resolve.sh	0755	user	copy	selkies
+config/remote-desktop-selkies.env.example	~/.config/selkies/remote-desktop.env	0600	user	template	selkies
+
+# --- 输入法光标（rakkord-imecaret）---
+systemd/rakkord-imecaret.service	~/.config/systemd/user/rakkord-imecaret.service	0644	user	copy	unit:rakkord-imecaret.service
+scripts/rakkord-imecaret.py	~/.local/libexec/rakkord-imecaret.py	0755	user	copy	unit:rakkord-imecaret.service
+
+# --- Sunshine/Moonlight 旁路（sunshine/）---
+sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-nvenc-prep.conf	~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-nvenc-prep.conf	0644	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-override.conf	~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-override.conf	0644	user	render	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-session-wait.conf	~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-session-wait.conf	0644	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-startup-watchdog.conf	~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-startup-watchdog.conf	0644	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/libexec/rakkord-sunshine-nvenc-prep.sh	~/.local/libexec/rakkord-sunshine-nvenc-prep.sh	0755	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/libexec/rakkord-sunshine-session-wait.sh	~/.local/libexec/rakkord-sunshine-session-wait.sh	0755	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/libexec/rakkord-sunshine-port-wait.sh	~/.local/libexec/rakkord-sunshine-port-wait.sh	0755	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/libexec/rakkord-sunshine-session-prep	~/.local/libexec/rakkord-sunshine-session-prep	0755	user	render	none
+sunshine/config/sunshine.conf.required	~/.config/sunshine/sunshine.conf	0644	user	check	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/config/apps.json	~/.config/sunshine/apps.json	0644	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service
+sunshine/systemd/rakkord-sunshine-input.service	~/.config/systemd/user/rakkord-sunshine-input.service	0644	user	render	unit:rakkord-sunshine-input.service
+sunshine/input-bridge	~/.local/libexec/rakkord-sunshine-input-bridge	0755	user	build	unit:rakkord-sunshine-input.service
+# KWin 只把 fake_input 给 Exec 与 .desktop 匹配的进程；改了 .desktop 要在会话环境里 kbuildsycoca6
+sunshine/desktop/rakkord-sunshine-input-bridge.desktop	~/.local/share/applications/rakkord-sunshine-input-bridge.desktop	0644	user	render	unit:rakkord-sunshine-input.service
+sunshine/systemd/rakkord-moonlight-preempt.service	~/.config/systemd/user/rakkord-moonlight-preempt.service	0644	user	render	unit:rakkord-moonlight-preempt.service
+sunshine/libexec/rakkord-moonlight-preempt	~/.local/libexec/rakkord-moonlight-preempt	0755	user	render	unit:rakkord-moonlight-preempt.service
+sunshine/bin/sunshine-cursor	~/.local/bin/sunshine-cursor	0755	user	render	none
+sunshine/bin/sunshine-dpi	~/.local/bin/sunshine-dpi	0755	user	render	none
+sunshine/bin/sunshine-selkies	~/.local/bin/sunshine-selkies	0755	user	render	none
+
+# --- root 文件（system/，部署时要 sudo）---
+system/sbin/rakko-gpu-mode	/usr/local/sbin/rakko-gpu-mode	0755	root	copy	none
+system/systemd/socat-selkies.service	/etc/systemd/system/socat-selkies.service	0644	root	render	system-unit:socat-selkies.service
+system/bin/socat-selkies.sh	/usr/local/bin/socat-selkies.sh	0755	root	render	system-unit:socat-selkies.service
+system/udev/70-rakkord-uinput.rules	/etc/udev/rules.d/70-rakkord-uinput.rules	0644	root	render	udev-reload
+system/nftables/selkies-lan-8090.nft	/etc/nftables.conf	0644	root	check	nft-reload
+
+# 漂移检查自身（每天 07:50 跑一次，结果进 journal；有漂移时 service 失败，RakkoOps 巡检可见）
+scripts/check-drift.py	~/.local/libexec/rakkord-check-drift	0755	user	copy	none
+systemd/rakkord-drift-check.service	~/.config/systemd/user/rakkord-drift-check.service	0644	user	copy	unit:rakkord-drift-check.timer
+systemd/rakkord-drift-check.timer	~/.config/systemd/user/rakkord-drift-check.timer	0644	user	copy	unit:rakkord-drift-check.timer

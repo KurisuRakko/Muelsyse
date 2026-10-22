@@ -95,6 +95,7 @@ def make_handler() -> WebRTCInput:
     h._clipboard_monitor_active = False
     h.clipboard_running = False
     h._clipboard_last_bytes = None
+    h._clipboard_inject_active = False
     h._x11_clipboard_monitor = None
     h._app_wl_display_cached = None
     h._has_separate_app_compositor = lambda: False

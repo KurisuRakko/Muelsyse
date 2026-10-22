@@ -2625,6 +2625,7 @@ def apply_common_capture_settings(
     use_paint_over_quality: bool,
     capture_cursor: bool,
     cursor_size_cap_hint: int = 0,
+    vbr: bool = False,
 ) -> Any:
     """Assign every CaptureSettings field the WebSocket and WebRTC paths share.
 
@@ -2655,6 +2656,10 @@ def apply_common_capture_settings(
         server: The parsed Settings object carrying the global knobs; the
             keyword arguments are the per-display ones each path resolves
             from its own client state.
+        vbr: With ``cbr``, encode the bitrate as a capped variable bitrate
+            rather than a constant one where the pixelflux build offers it
+            (VA-API): no padding on easy content, and on Intel it encodes as
+            fast as constant quality where constant bitrate runs ~40% slower.
 
     Returns:
         The same ``cs``, populated.
@@ -2670,6 +2675,9 @@ def apply_common_capture_settings(
     cs.video_streaming_mode = streaming
     cs.video_fullframe = encoder == "h264enc"
     cs.video_cbr_mode = cbr
+    # A pixelflux build without the field encodes the bitrate as CBR.
+    if hasattr(cs, "video_vbr_mode"):
+        cs.video_vbr_mode = bool(cbr and vbr)
     cs.video_bitrate_kbps = int(round(float(bitrate_kbps)))
     # 0 = infinite GOP (on-demand keyframes only).
     cs.keyframe_interval_s = float(getattr(server, "keyframe_interval", 0) or 0)

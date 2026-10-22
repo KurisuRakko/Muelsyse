@@ -1,0 +1,22 @@
+[Unit]
+Description=Sunshine input bridge (uinput -> org_kde_kwin_fake_input)
+ConditionUser=@USER@
+# Selkies 的 KWin 会话提供 wayland-remote-desktop socket 与 fake_input 协议。
+# 刻意用 Wants/After 而不是 Requires/BindsTo：这个 bridge 挂掉或重启
+# 绝不能反向影响正在生产使用的 Selkies 远程桌面。
+Wants=remote-desktop-wayland.service
+After=remote-desktop-wayland.service
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-remote-desktop
+Environment=XDG_RUNTIME_DIR=%t
+# 不传 --width/--height：让它从 wl_output 动态读逻辑尺寸，
+# 这样 Selkies 或 Moonlight 改分辨率时绝对坐标映射会自动跟上。
+ExecStart=%h/.local/libexec/rakkord-sunshine-input-bridge
+Restart=on-failure
+# KWin 没就绪时会连不上 socket，给足间隔避免疯狂重启刷日志。
+RestartSec=3
+
+[Install]
+WantedBy=default.target

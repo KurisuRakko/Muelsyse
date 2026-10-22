@@ -124,6 +124,16 @@ unsafe extern "C" fn release_drm_frame(opaque: *mut c_void, data: *mut u8) {
 
 /// An FFmpeg pixel format's canonical name, used both as a `scale_vaapi` argument and in the
 /// messages that explain a failed negotiation.
+/// The `h264_vaapi` rate-control mode for a bitrate-mode session.
+///
+/// `VBR` with `rc_max_rate = bit_rate` caps the stream like `CBR` does and keeps its small-VBV
+/// keyframes, but pads nothing on easy content, and on Intel's iHD driver it encodes as fast as
+/// `CQP` where `CBR` is measured ~40% slower (330 vs 550 fps at 2600x1440 on a UHD 630) — enough,
+/// with two in-flight capture slots, to cost a loaded GPU a third of its frame rate.
+fn bitrate_rc_mode(vbr: bool) -> &'static str {
+    if vbr { "VBR" } else { "CBR" }
+}
+
 fn pix_fmt_name(fmt: ff::AVPixelFormat) -> String {
     unsafe {
         let name = ff::av_get_pix_fmt_name(fmt);
@@ -273,6 +283,7 @@ pub struct VaapiEncoder {
     qp_hysteresis_counter: u32,
 
     cbr_mode: bool,
+    vbr_mode: bool,
     current_bitrate_kbps: i32,
     current_vbv_mult: f64,
     current_kf_s: f64,
@@ -369,8 +380,9 @@ impl VaapiEncoder {
     /// 3. **Codec context**: `h264_vaapi` with an effectively **infinite GOP** (`gop_size = INT_MAX`,
     ///    IDRs only on demand), **no B-frames** (low latency), **4 slices** (lets client decoders
     ///    parallelize; more than 4 upsets Chromium), and `compression_level = 6` (the VA quality
-    ///    knob, biased toward speed — higher is faster). Rate control is either **CBR** (program
-    ///    `bit_rate`/`rc_max_rate` and a `vbv_bits`-derived `rc_buffer_size`, `rc_mode=CBR`) or
+    ///    knob, biased toward speed — higher is faster). Rate control is either **bitrate** (program
+    ///    `bit_rate`/`rc_max_rate` and a `vbv_bits`-derived `rc_buffer_size`, `rc_mode=CBR`, or
+    ///    `VBR` under `video_vbr_mode` — see `bitrate_rc_mode`) or
     ///    **CQP** (`rc_mode=CQP` plus a fixed `qp`); both then pin the minimum `level` and
     ///    `async_depth=1`, and a 4:2:0 session also pins `profile=high`. `set_colorimetry` declares
     ///    the BT.709 limited-range VUI the graph produces.
@@ -560,7 +572,7 @@ impl VaapiEncoder {
                 (*encoder_ctx).bit_rate = bps;
                 (*encoder_ctx).rc_max_rate = bps;
                 (*encoder_ctx).rc_buffer_size = vbv.min(i32::MAX as u32) as i32;
-                set_opt(&mut opts, "rc_mode", "CBR");
+                set_opt(&mut opts, "rc_mode", bitrate_rc_mode(settings.video_vbr_mode));
             } else {
                 set_opt(&mut opts, "rc_mode", "CQP");
                 set_opt(&mut opts, "qp", &settings.video_crf.to_string());
@@ -784,6 +796,7 @@ impl VaapiEncoder {
                 current_qp: settings.video_crf as u32,
                 qp_hysteresis_counter: 0,
                 cbr_mode: settings.video_cbr_mode,
+                vbr_mode: settings.video_vbr_mode,
                 current_bitrate_kbps: settings.video_bitrate_kbps,
                 current_vbv_mult: settings.video_vbv_multiplier,
                 current_kf_s: settings.keyframe_interval_s,
@@ -854,7 +867,7 @@ impl VaapiEncoder {
             (*self.encoder_ctx).bit_rate = bps;
             (*self.encoder_ctx).rc_max_rate = bps;
             (*self.encoder_ctx).rc_buffer_size = vbv.min(i32::MAX as u32) as i32;
-            set_opt(&mut opts, "rc_mode", "CBR");
+            set_opt(&mut opts, "rc_mode", bitrate_rc_mode(self.vbr_mode));
         } else {
             set_opt(&mut opts, "rc_mode", "CQP");
             set_opt(&mut opts, "qp", &qp.to_string());

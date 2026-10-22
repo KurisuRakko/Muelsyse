@@ -357,6 +357,8 @@ pub mod pipeline;
 pub mod x11;
 /// Multi-GPU NVENC device filtering via kernel ioctl.
 pub mod nvgpufilter;
+/// Per-second host-capture pipeline counters behind `RAKKORD_PERF`.
+pub mod perf;
 
 pub mod webcam;
 
@@ -516,6 +518,9 @@ pub struct RustCaptureSettings {
     /// stripe metadata is then carried only on the frame attributes.
     pub omit_stripe_headers: bool,
     pub video_cbr_mode: bool,
+    /// With `video_cbr_mode`, rate-control the bitrate as a capped variable bitrate
+    /// (`maxrate = bitrate`) on encoders that offer one (VA-API); the others keep CBR.
+    pub video_vbr_mode: bool,
     pub video_bitrate_kbps: i32,
     /// CBR VBV/HRD size as a multiple of one frame's bit budget (bitrate/framerate), so it
     /// rescales with live bitrate/fps changes. `<= 0` selects the policy default: 1.5 on an
@@ -621,6 +626,7 @@ impl Default for RustCaptureSettings {
             wayland_host_backend: "protocol".to_string(),
             omit_stripe_headers: false,
             video_cbr_mode: false,
+            video_vbr_mode: false,
             video_bitrate_kbps: 4000,
             video_vbv_multiplier: 0.0,
             keyframe_interval_s: 0.0,
@@ -735,6 +741,11 @@ pub(crate) fn extract_settings(settings: &Bound<'_, PyAny>) -> PyResult<RustCapt
             .and_then(|v| v.extract::<bool>().ok())
             .unwrap_or(false),
         video_cbr_mode: settings.getattr("video_cbr_mode")?.extract()?,
+        video_vbr_mode: settings
+            .getattr("video_vbr_mode")
+            .ok()
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(false),
         video_bitrate_kbps: settings.getattr("video_bitrate_kbps")?.extract()?,
         video_vbv_multiplier: settings
             .getattr("video_vbv_multiplier")
@@ -1829,7 +1840,8 @@ fn log_stream_settings(
         }
 
         if settings.video_cbr_mode {
-            log_msg.push_str(&format!(" | CBR {}", settings.video_bitrate_kbps));
+            let mode = if settings.video_vbr_mode { "Capped VBR (VA-API; CBR elsewhere)" } else { "CBR" };
+            log_msg.push_str(&format!(" | {} {}", mode, settings.video_bitrate_kbps));
         } else {
             log_msg.push_str(&format!(" | CRF: {}", settings.video_crf));
             if settings.video_bitrate_kbps > 0 {
@@ -2717,6 +2729,7 @@ fn start_capture_on_display(
                     while let Ok(stripes) = rx.recv() {
                         if thread_discard.load(Ordering::Relaxed)
                             || PY_SHUTDOWN.load(Ordering::Relaxed) { continue; }
+                        let perf_started = crate::perf::start();
                         Python::attach(|py| {
                             for s in stripes {
                                 match Py::new(py, StripeFrame::new_owned_meta(
@@ -2728,6 +2741,7 @@ fn start_capture_on_display(
                                 }
                             }
                         });
+                        crate::perf::deliver_done(perf_started);
                     }
                 }
                 None => while rx.recv().is_ok() {},
@@ -3261,6 +3275,7 @@ fn render_node_tick(
             .map(|c| (c.settings.width, c.settings.height));
         let new_frame = match (host.try_take_frame(host_idx), expect) {
             (Some(f), Some((w, h))) if f.width != w || f.height != h => {
+                crate::perf::host_stale();
                 host.release_frame(host_idx, f);
                 None
             }
@@ -3307,9 +3322,11 @@ fn render_node_tick(
                 };
                 cap.pace.defer(held.max(now + Duration::from_millis(1)));
             }
+            crate::perf::host_defer();
             state.host = Some(host);
             return false;
         }
+        crate::perf::host_tick(trigger);
         if let Some(cap) = node.capture.as_mut()
             && let Some(period) = period
         {
@@ -3853,6 +3870,7 @@ fn render_node_tick(
                     },
                 };
                 if !slot_free {
+                    crate::perf::enc_busy();
                     if !damage_rects.is_empty() {
                         cap.pending_hw_damage = true;
                     }
@@ -3871,6 +3889,9 @@ fn render_node_tick(
                 let mut send_frame = decision.send;
                 let force_idr = decision.force_idr;
                 let target_qp = decision.target_qp;
+                if !send_frame {
+                    crate::perf::enc_nochange();
+                }
 
                 let mut frame_out = false;
                 if send_frame
@@ -3885,6 +3906,7 @@ fn render_node_tick(
                     let enc_dmabuf: Option<Dmabuf> = host_enc_dmabuf
                         .clone()
                         .or_else(|| node.offscreen_buffer.as_ref().map(|(_, d)| d.clone()));
+                    let perf_started = crate::perf::start();
                     let result = match encoder {
                         GpuEncoder::Nvenc(enc) => {
                             if let Some(ref dmabuf) = enc_dmabuf {
@@ -3901,6 +3923,10 @@ fn render_node_tick(
                             }
                         }
                     };
+                    crate::perf::enc_done(
+                        perf_started,
+                        result.as_ref().ok().filter(|d| !d.is_empty()).map(|d| d.len()),
+                    );
 
                     if let Ok(data) = result {
                         cap.hw_error_streak = 0;
@@ -5070,6 +5096,7 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                     | ThreadCommand::PointerAxis { .. }
             );
             if matches!(cmd, ThreadCommand::PointerMotion { .. } | ThreadCommand::PointerRelativeMotion { .. }) {
+                crate::perf::pointer_command();
                 note_pointer_motion(state);
             }
             handle_thread_command(state, cmd);
@@ -5852,6 +5879,9 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                             node.id, cap.settings.width, cap.settings.height, mode_str, n_stripes, actual_fps, stripes_per_sec, current_rss / 1024 / 1024, shm_usage / 1024 / 1024);
                     }
                 }
+                if let Some(line) = crate::perf::take_line() {
+                    println!("{line}");
+                }
                 state.last_log_time = now;
             }
 
@@ -6535,6 +6565,7 @@ struct CaptureSettings {
     #[pyo3(get, set)] use_cpu: bool,
     #[pyo3(get, set)] debug_logging: bool,
     #[pyo3(get, set)] video_cbr_mode: bool,
+    #[pyo3(get, set)] video_vbr_mode: bool,
     #[pyo3(get, set)] video_bitrate_kbps: i32,
     #[pyo3(get, set)] video_vbv_multiplier: f64,
     #[pyo3(get, set)] keyframe_interval_s: f64,
@@ -6578,7 +6609,7 @@ impl CaptureSettings {
             video_fullcolor: false, video_fullframe: false, video_streaming_mode: false,
             capture_cursor: false, watermark_path: py.None(), watermark_location_enum: 0,
             encode_node_index: -2, use_cpu: false, debug_logging: false,
-            video_cbr_mode: false, video_bitrate_kbps: 4000, video_vbv_multiplier: 0.0,
+            video_cbr_mode: false, video_vbr_mode: false, video_bitrate_kbps: 4000, video_vbv_multiplier: 0.0,
             keyframe_interval_s: 0.0,
             video_min_qp: 0, video_max_qp: 0,
             auto_adjust_screen_capture_size: false, omit_stripe_headers: false,
@@ -7607,6 +7638,70 @@ impl ScreenCapture {
     ) -> PyResult<()> {
         py.detach(move || crate::wayland::dcclient::write(&app_socket_path(&display)?, entries))
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+    /// `clipboard_write_app`, but count the paste requests served in full from
+    /// this selection, except those for the `uncounted` mimes. Returns a token
+    /// for `clipboard_wait_served_app`; release it with
+    /// `clipboard_release_tracked_app`.
+    #[pyo3(signature = (display, entries, uncounted = Vec::new()))]
+    fn clipboard_write_app_tracked(
+        &self,
+        py: Python<'_>,
+        display: String,
+        entries: Vec<(String, Vec<u8>)>,
+        uncounted: Vec<String>,
+    ) -> PyResult<u64> {
+        py.detach(move || {
+            crate::wayland::dcclient::write_tracked(&app_socket_path(&display)?, entries, uncounted)
+        })
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+    /// Block (GIL released) up to `timeout_ms` until the tracked write has served
+    /// more than `after` paste requests or lost the selection.
+    /// Returns `(served, ended)`; an unknown token reads as `(0, True)`.
+    fn clipboard_wait_served_app(
+        &self,
+        py: Python<'_>,
+        token: u64,
+        after: u64,
+        timeout_ms: u64,
+    ) -> (u64, bool) {
+        py.detach(move || {
+            crate::wayland::dcclient::wait_served(token, after, std::time::Duration::from_millis(timeout_ms))
+        })
+    }
+    /// Forget a tracked write's ledger; the selection itself is unaffected.
+    fn clipboard_release_tracked_app(&self, token: u64) {
+        crate::wayland::dcclient::release_tracked(token);
+    }
+    /// Deliver one touch frame to the KWin host as touchscreen input. Each
+    /// event is `(kind, id, x, y)` with `kind` one of `"d"` (down), `"m"`
+    /// (motion), `"u"` (up) and `"c"` (cancel every contact), and `x`/`y` in
+    /// KWin's global logical coordinates, as for absolute pointer motion.
+    /// False when nothing delivered it: no KWin host armed, a KWin without the
+    /// fake-input global or below its version 2, or the connection down.
+    fn inject_touch(&self, py: Python<'_>, events: Vec<(String, u32, f64, f64)>) -> PyResult<bool> {
+        use crate::wayland::ficlient::TouchEvent;
+        let mut frame = Vec::with_capacity(events.len());
+        for (kind, id, x, y) in events {
+            frame.push(match kind.as_str() {
+                "d" => TouchEvent::Down { id, x, y },
+                "m" => TouchEvent::Motion { id, x, y },
+                "u" => TouchEvent::Up { id },
+                "c" => TouchEvent::Cancel,
+                other => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "unknown touch event kind {other:?}"
+                    )));
+                }
+            });
+        }
+        Ok(py.detach(move || crate::wayland::kwin_input::KWinInputClipboardBridge::touch(&frame)))
+    }
+    /// False once the KWin host's fake-input client found the global missing
+    /// or too old for touch; true before it has connected.
+    fn native_touch_available(&self) -> bool {
+        crate::wayland::kwin_input::KWinInputClipboardBridge::touch_available()
     }
     /// Drop the app compositor's selection.
     fn clipboard_clear_app(&self, py: Python<'_>, display: String) -> PyResult<()> {

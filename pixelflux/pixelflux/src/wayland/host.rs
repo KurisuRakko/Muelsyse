@@ -1369,6 +1369,7 @@ impl HostSession {
         while let Ok(frame) = handle.frames.try_recv() {
             handle.queued.fetch_sub(1, Ordering::AcqRel);
             if let Some(stale) = newest.replace(frame) {
+                crate::perf::host_superseded();
                 handle.send(ToHost::Release { generation: stale.generation, slot: stale.slot });
             }
         }

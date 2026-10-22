@@ -8,17 +8,25 @@ fail() {
     exit 1
 }
 
-[[ "$(id -un)" == "rakko" ]] || fail "必须以 rakko 身份运行"
+(( EUID != 0 )) || fail "不要以 root 运行（POC 跑在调用者自己的 user manager 里）"
 [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" ]] || fail "XDG_RUNTIME_DIR 不可用"
 grep -qE '^VERSION_ID="?13([.]|"|$)' /etc/os-release || fail "当前主机不是 Debian 13"
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=scripts/rakkord-env.sh
+source "$ROOT/scripts/rakkord-env.sh"
+rakkord_load_env
+SELKIES_VENV=${RAKKORD_SELKIES_VENV:-/opt/selkies}
+RESOLUTION=${RAKKORD_RESOLUTION:-3840x2160}
+[[ "$RESOLUTION" =~ ^([0-9]+)x([0-9]+)$ ]] || fail "RAKKORD_RESOLUTION 应是 宽x高: $RESOLUTION"
+INITIAL_WIDTH=${BASH_REMATCH[1]}
+INITIAL_HEIGHT=${BASH_REMATCH[2]}
 BUILD_ROOT=${KWIN_MEDIA_POC_BUILD_ROOT:-$HOME/build/kwin-adapter}
 KWIN_BIN=${KWIN_MEDIA_POC_KWIN_BIN:-$BUILD_ROOT/bin/kwin_wayland}
-PYTHON_BIN=${SELKIES_MEDIA_POC_PYTHON:-/opt/selkies/bin/python3}
+PYTHON_BIN=${SELKIES_MEDIA_POC_PYTHON:-$SELKIES_VENV/bin/python3}
 SELKIES_SOURCE=${SELKIES_MEDIA_POC_SOURCE:-$HOME/src/selkies-kwin-pipewire-poc}
 PIXELFLUX_SO=${SELKIES_MEDIA_POC_PIXELFLUX_SO:-$HOME/src/pixelflux-kwin-poc/pixelflux/target/release/libpixelflux.so}
-WEB_ROOT=${SELKIES_MEDIA_POC_WEB_ROOT:-/opt/selkies/lib/python3.13/site-packages/selkies/selkies_web}
+WEB_ROOT=${SELKIES_MEDIA_POC_WEB_ROOT:-$SELKIES_VENV/lib/python3.13/site-packages/selkies/selkies_web}
 PACER_SOURCE=${SELKIES_MEDIA_POC_PACER_SOURCE:-$ROOT/scripts/wayland-frame-pacer.c}
 PROBE_EXE=${SELKIES_MEDIA_POC_PROBE_EXE:-$HOME/src/pixelflux-kwin-poc/pixelflux/target/release/examples/kwin-pipewire-poc}
 TARGET_WIDTH=${MEDIA_POC_TARGET_WIDTH:-2560}
@@ -124,7 +132,7 @@ ln -s "$WEB_ROOT" "$SELKIES_SITE/selkies_web"
 EXT_SUFFIX=$("$PYTHON_BIN" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX") or ".so")')
 ln -s "$PIXELFLUX_SO" "$SITE_DIR/pixelflux${EXT_SUFFIX}"
 
-PYTHONPATH_VALUE="$SITE_DIR:/opt/selkies/lib/python3.13/site-packages"
+PYTHONPATH_VALUE="$SITE_DIR:$SELKIES_VENV/lib/python3.13/site-packages"
 PYTHONPATH="$PYTHONPATH_VALUE" "$PYTHON_BIN" - <<'PY'
 import pixelflux
 assert hasattr(pixelflux, "ScreenCapture")
@@ -158,8 +166,8 @@ export PYTHONPATH="$PYTHONPATH_VALUE"
 
 common_env=(
     "--setenv=HOME=$HOME"
-    "--setenv=USER=rakko"
-    "--setenv=LOGNAME=rakko"
+    "--setenv=USER=$(id -un)"
+    "--setenv=LOGNAME=$(id -un)"
     "--setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
     "--setenv=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
     "--setenv=XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
@@ -200,7 +208,7 @@ fi
 systemd-run --user --unit="$KWIN_UNIT" --collect "${kwin_run_options[@]}" "${common_env[@]}" \
     "${kwin_env_options[@]}" \
     --setenv=QT_LOGGING_RULES='kwin.selkies.adapter.debug=true;kwin_screencast.debug=true' \
-    "$KWIN_BIN" --virtual --socket="$WAYLAND_DISPLAY" --width=3840 --height=2160 --scale=1 \
+    "$KWIN_BIN" --virtual --socket="$WAYLAND_DISPLAY" --width="$INITIAL_WIDTH" --height="$INITIAL_HEIGHT" --scale=1 \
     --no-lockscreen --no-global-shortcuts >/dev/null
 started_units+=("$KWIN_UNIT")
 for _ in $(seq 1 120); do
@@ -215,7 +223,7 @@ done
 
 WAYLAND_DISPLAY="$WAYLAND_DISPLAY" wayland-info >"$WAYLAND_INFO_LOG" 2>&1 || fail "wayland-info 失败"
 grep -q 'kde_output_management_v2' "$WAYLAND_INFO_LOG" || fail "没有 KDE output-management-v2"
-grep -Eq '3840x2160|3840 x 2160|logical_width: 3840, logical_height: 2160|width: 3840 px, height: 2160 px' "$WAYLAND_INFO_LOG" || fail "隔离 KWin 初始输出不是 3840x2160"
+grep -Eq "${INITIAL_WIDTH}x${INITIAL_HEIGHT}|${INITIAL_WIDTH} x ${INITIAL_HEIGHT}|logical_width: ${INITIAL_WIDTH}, logical_height: ${INITIAL_HEIGHT}|width: ${INITIAL_WIDTH} px, height: ${INITIAL_HEIGHT} px" "$WAYLAND_INFO_LOG" || fail "隔离 KWin 初始输出不是 ${INITIAL_WIDTH}x${INITIAL_HEIGHT}"
 
 systemd-run --user --unit="$PLASMA_UNIT" --collect "${common_env[@]}" /usr/bin/plasmashell --no-respawn >/dev/null
 started_units+=("$PLASMA_UNIT")
@@ -257,6 +265,16 @@ if [[ "${MEDIA_POC_DIRECT_PROBE:-false}" == "true" ]]; then
     sleep "$(( ${MEDIA_POC_DIRECT_PROBE_SECONDS:-20} + 2 ))"
 fi
 
+# 编码用 Intel 的 render 节点：编号会在重启后漂移，按 PCI 地址现场解析
+# （DRI_INTEL_PCI 可覆盖，见 scripts/dri-node-resolve.sh），MEDIA_POC_DRI_NODE 可直接指定。
+if [[ -n "${MEDIA_POC_DRI_NODE:-}" ]]; then
+    DRI_RENDER_NODE=$MEDIA_POC_DRI_NODE
+else
+    # shellcheck source=scripts/dri-node-resolve.sh
+    source "$ROOT/scripts/dri-node-resolve.sh"
+    DRI_RENDER_NODE=$(dri_intel_render_node) || fail "解析不出 Intel render 节点（设 MEDIA_POC_DRI_NODE 指定）"
+fi
+
 selkies_env=(
     "${common_env[@]}"
     "--setenv=PYTHONPATH=$PYTHONPATH_VALUE"
@@ -268,8 +286,8 @@ selkies_env=(
     "--setenv=PIXELFLUX_KWIN_STATS=1"
     "--setenv=SELKIES_WAYLAND_HOST_DISPLAY=$WAYLAND_DISPLAY"
     "--setenv=SELKIES_WAYLAND_HOST_BACKEND=kwin"
-    "--setenv=DRI_NODE=/dev/dri/renderD128"
-    "--setenv=DRINODE=/dev/dri/renderD128"
+    "--setenv=DRI_NODE=$DRI_RENDER_NODE"
+    "--setenv=DRINODE=$DRI_RENDER_NODE"
     "--setenv=AUTO_GPU=intel"
     "--setenv=SELKIES_GPU_ID=0"
     "--setenv=SELKIES_ENCODER=h264enc"
@@ -311,7 +329,7 @@ if grep -Eq '0\.0\.0\.0:18090|\*:18090|\[::\]:18090' "$SS_LOG"; then
 fi
 
 echo "MEDIA_POC_READY port=18090 target=${TARGET_WIDTH}x${TARGET_HEIGHT}@60 run_id=$RUN_ID log_dir=$RUN_LOG_DIR"
-echo "MEDIA_POC_ATTACH ssh -N -L 18090:127.0.0.1:18090 <user>@<host>"
+echo "MEDIA_POC_ATTACH ssh -N -L 18090:127.0.0.1:18090 $(id -un)@$(hostname)"
 sleep "${POC_HOLD_SECONDS:-240}"
 
 refresh_logs

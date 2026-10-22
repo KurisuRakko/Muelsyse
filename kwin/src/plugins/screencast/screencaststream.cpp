@@ -37,6 +37,14 @@
 namespace KWin
 {
 
+// KWIN_SCREENCAST_CURSOR_SHAPE_ONLY=1：metadata 光标模式下，光标只在形状变化时单独成帧，
+// 位置随每个视频帧的 metadata 一起带上。只有位置在变时不再单独 dequeue/queue 一个 buffer。
+static bool cursorShapeOnly()
+{
+    static const bool enabled = qEnvironmentVariableIntValue("KWIN_SCREENCAST_CURSOR_SHAPE_ONLY") != 0;
+    return enabled;
+}
+
 static const struct
 {
     uint32_t drmFormat;
@@ -448,8 +456,17 @@ bool ScreenCastStream::createStream()
         break;
     case ScreencastV1Interface::Embedded:
     case ScreencastV1Interface::Metadata:
-        m_cursor.changedConnection = connect(Cursors::self(), &Cursors::currentCursorChanged, this, &ScreenCastStream::invalidateCursor);
+        m_cursor.changedConnection = connect(Cursors::self(), &Cursors::currentCursorChanged, this, [this] {
+            invalidateCursor();
+            if (m_cursor.mode == ScreencastV1Interface::Metadata && cursorShapeOnly()) {
+                scheduleRecord({}, Content::Cursor);
+            }
+        });
         m_cursor.positionChangedConnection = connect(Cursors::self(), &Cursors::positionChanged, this, [this] {
+            // 位置单独成帧会和紧随其后的视频帧抢 buffer，窗口重绘因此整帧丢掉。
+            if (m_cursor.mode == ScreencastV1Interface::Metadata && cursorShapeOnly() && !m_cursor.invalid && m_cursor.resendFrames == 0) {
+                return;
+            }
             scheduleRecord({}, Content::Cursor);
         });
         break;
@@ -862,18 +879,40 @@ void ScreenCastStream::addCursorMetadata(spa_buffer *spaBuffer, Cursor *cursor)
     spaMetaCursor->id = 1;
     spaMetaCursor->position.x = position.x();
     spaMetaCursor->position.y = position.y();
-    spaMetaCursor->hotspot.x = cursor->hotspot().x() * scale;
-    spaMetaCursor->hotspot.y = cursor->hotspot().y() * scale;
     spaMetaCursor->bitmap_offset = 0;
 
-    if (!m_cursor.invalid) {
+    // RakkoRD：hotspot 和位图必须成对。以前每帧写实时 hotspot、只在 invalid 时附图，
+    // 形状切换的瞬间会出现「新 hotspot + 下游缓存的旧图」或「新图 + 旧 hotspot」，
+    // 光标跳一下可达 ~300ms。现在无图帧只写上次附图时的 hotspot；实时 hotspot
+    // 一旦和它不同就当 invalid，这一帧连图一起重发。形状变化后再连续附图几帧，
+    // 防下游丢帧，也覆盖 surface cursor 抓到旧画面的情况（commit 后还会再 invalidate）。
+    if (cursor->hotspot() != m_cursor.sentHotspot) {
+        m_cursor.invalid = true;
+    }
+    if (m_cursor.invalid) {
+        m_cursor.invalid = false;
+        m_cursor.resendFrames = 3;
+    }
+    if (m_cursor.resendFrames == 0) {
+        spaMetaCursor->hotspot.x = m_cursor.sentHotspot.x() * scale;
+        spaMetaCursor->hotspot.y = m_cursor.sentHotspot.y() * scale;
         return;
     }
+    --m_cursor.resendFrames;
 
-    m_cursor.invalid = false;
+    // 只取一次，hotspot、尺寸和像素都出自同一张图。PlatformCursorImage::hotSpot()
+    // 和 cursor->hotspot() 一样是逻辑坐标（同一个 CursorSource::m_hotspot）。
+    const PlatformCursorImage cursorImage = kwinApp()->cursorImage();
+    const QImage image = cursorImage.image();
+    // 没图（geometry 空）时记实时 hotspot，不然 (0,0) 和实时值永远不等，会每帧重取。
+    m_cursor.sentHotspot = image.isNull() ? cursor->hotspot() : cursorImage.hotSpot();
+    spaMetaCursor->hotspot.x = m_cursor.sentHotspot.x() * scale;
+    spaMetaCursor->hotspot.y = m_cursor.sentHotspot.y() * scale;
     spaMetaCursor->bitmap_offset = sizeof(struct spa_meta_cursor);
 
-    const QSize targetSize = (cursor->rect().size() * scale).toSize();
+    const QSize targetSize = image.isNull()
+        ? (cursor->rect().size() * scale).toSize()
+        : (QSizeF(image.size()) / image.devicePixelRatio() * scale).toSize();
 
     struct spa_meta_bitmap *spaMetaBitmap = SPA_MEMBER(spaMetaCursor,
                                                        spaMetaCursor->bitmap_offset,
@@ -892,7 +931,6 @@ void ScreenCastStream::addCursorMetadata(spa_buffer *spaBuffer, Cursor *cursor)
                 QImage::Format_RGBA8888_Premultiplied);
     dest.fill(Qt::transparent);
 
-    const QImage image = kwinApp()->cursorImage().image();
     if (!image.isNull()) {
         QPainter painter(&dest);
         painter.drawImage(QRect({0, 0}, targetSize), image);

@@ -10,12 +10,19 @@ die() {
     exit 1
 }
 
-[[ "$(id -un)" == "rakko" ]] || die "必须以 rakko 身份运行"
-[[ "${HOME:-}" == "/home/rakko" ]] || die "需要 /home/rakko 作为 HOME"
+(( EUID != 0 )) || die "不要以 root 运行（POC 跑在调用者自己的 user manager 里）"
+[[ -n "${HOME:-}" && -d "$HOME" && -w "$HOME" ]] || die "HOME 不可用: ${HOME:-<空>}"
 [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" ]] || die "XDG_RUNTIME_DIR 不可用"
 grep -qE '^VERSION_ID="?13([.]|"|$)' /etc/os-release || die "当前主机不是 Debian 13"
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=scripts/rakkord-env.sh
+source "$ROOT/scripts/rakkord-env.sh"
+rakkord_load_env
+RESOLUTION=${RAKKORD_RESOLUTION:-3840x2160}
+[[ "$RESOLUTION" =~ ^([0-9]+)x([0-9]+)$ ]] || die "RAKKORD_RESOLUTION 应是 宽x高: $RESOLUTION"
+WIDTH=${BASH_REMATCH[1]}
+HEIGHT=${BASH_REMATCH[2]}
 PROBE_BIN=${KWIN_POC_PROBE_BIN:-$HOME/src/pixelflux-kwin-poc/pixelflux/target/debug/examples/kwin-pipewire-poc}
 SESSION_BIN=${KWIN_POC_SESSION_BIN:-$HOME/src/pixelflux-kwin-poc/pixelflux/target/debug/examples/kwin-host-session-poc}
 [[ -x "$PROBE_BIN" ]] || die "找不到 probe binary: $PROBE_BIN"
@@ -68,14 +75,17 @@ trap cleanup EXIT
 
 install -Dm755 "$PROBE_BIN" "$POC_EXE"
 CREATED_EXE=1
-install -Dm644 "$ROOT/desktop/selkies-kwin-poc.desktop" "$DESKTOP"
+# KWin 按 Exec 的绝对路径授权受限协议，仓库里的 @HOME@ 要换成真实路径。
+mkdir -p "$(dirname "$DESKTOP")"
+sed "s#@HOME@#$HOME#g" "$ROOT/desktop/selkies-kwin-poc.desktop" > "$DESKTOP"
+chmod 644 "$DESKTOP"
 CREATED_DESKTOP=1
 kbuildsycoca6 --noincremental >/dev/null 2>&1
 
 systemd-run --user --unit="$UNIT" --collect \
     --setenv=HOME="$HOME" \
-    --setenv=USER=rakko \
-    --setenv=LOGNAME=rakko \
+    --setenv=USER="$(id -un)" \
+    --setenv=LOGNAME="$(id -un)" \
     --setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     --setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
     --setenv=XDG_CURRENT_DESKTOP=KDE \
@@ -85,7 +95,7 @@ systemd-run --user --unit="$UNIT" --collect \
     --setenv=WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
     --setenv=QT_LOGGING_RULES='kwin_screencast.debug=true;KWIN_UTILS.debug=true' \
     /usr/bin/kwin_wayland --virtual --socket="$WAYLAND_DISPLAY" \
-    --width=3840 --height=2160 --scale=1 --no-lockscreen --no-global-shortcuts >/dev/null
+    --width="$WIDTH" --height="$HEIGHT" --scale=1 --no-lockscreen --no-global-shortcuts >/dev/null
 UNIT_STARTED=1
 
 socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
@@ -102,8 +112,8 @@ export XDG_MENU_PREFIX=plasma-
 export QT_QPA_PLATFORM=wayland
 wayland-info >"$WAYLAND_INFO_LOG" 2>&1 || die "wayland-info 失败"
 grep -q 'kde_output_management_v2' "$WAYLAND_INFO_LOG" || die "KWin 未公告 output-management-v2"
-grep -Eq '3840x2160|3840 x 2160|logical_width: 3840, logical_height: 2160|width: 3840 px, height: 2160 px' \
-    "$WAYLAND_INFO_LOG" || die "未从 wayland-info 读到 3840x2160"
+grep -Eq "${WIDTH}x${HEIGHT}|${WIDTH} x ${HEIGHT}|logical_width: ${WIDTH}, logical_height: ${HEIGHT}|width: ${WIDTH} px, height: ${HEIGHT} px" \
+    "$WAYLAND_INFO_LOG" || die "未从 wayland-info 读到 ${WIDTH}x${HEIGHT}"
 
 POC_ENV=(env
     "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
@@ -113,7 +123,7 @@ POC_ENV=(env
     "XDG_MENU_PREFIX=plasma-"
     "QT_QPA_PLATFORM=wayland"
 )
-"${POC_ENV[@]}" "$POC_EXE" "$WAYLAND_DISPLAY" 3840 2160 60 3 >"$PROBE_LOG" 2>&1 \
+"${POC_ENV[@]}" "$POC_EXE" "$WAYLAND_DISPLAY" "$WIDTH" "$HEIGHT" 60 3 >"$PROBE_LOG" 2>&1 \
     || { sed -n '1,220p' "$PROBE_LOG" >&2; die "KWin PipeWire DMA-BUF probe 失败"; }
 grep -q '^POC_PASS ' "$PROBE_LOG" || die "probe 没有 POC_PASS"
 grep -q 'fps=60/1 max_fps=60/1' "$PROBE_LOG" || die "probe 没有 60 FPS 协商"
@@ -126,12 +136,12 @@ fi
 install -m755 "$SESSION_BIN" "$POC_EXE"
 kbuildsycoca6 --noincremental >/dev/null 2>&1
 set +e
-"${POC_ENV[@]}" "$POC_EXE" "$WAYLAND_DISPLAY" 3840 2160 1920 1080 >"$INTEGRATION_LOG" 2>&1
+"${POC_ENV[@]}" "$POC_EXE" "$WAYLAND_DISPLAY" "$WIDTH" "$HEIGHT" 1920 1080 >"$INTEGRATION_LOG" 2>&1
 integration_rc=$?
 set -e
 
-grep -q 'INITIAL_FRAME width=3840 height=2160 dmabuf=true' "$INTEGRATION_LOG" \
-    || die "集成探针没有 4K DMA-BUF 初始帧"
+grep -q "INITIAL_FRAME width=$WIDTH height=$HEIGHT dmabuf=true" "$INTEGRATION_LOG" \
+    || die "集成探针没有 ${WIDTH}x${HEIGHT} DMA-BUF 初始帧"
 grep -q 'INPUT_SENT=true' "$INTEGRATION_LOG" \
     || die "集成探针没有确认 KWin fake-input"
 if grep -Eqi 'capturing locally|SHM fallback|CPU fallback' "$INTEGRATION_LOG"; then

@@ -1,37 +1,40 @@
 # Known limitations
 
-This grew out of one machine (a specific deployment user's home
-directory), and a few things still assume that rather than reading it
-from the environment. This only lists what actually affects *running*
-the code — prose elsewhere that happens to show a path doesn't count.
+This grew out of one machine, and it has only been run there: Debian 13,
+KWin 6.3.6, an Intel iGPU for VAAPI and an NVIDIA card for NVENC. Treat
+anything outside that as untested.
 
-Most scripts already take the form `${VAR:-$HOME/...}` and can be
-overridden by environment variable — for example
-`scripts/install-production-host-wayland.sh`'s `SELKIES_KWIN_PREFIX` /
-`SELKIES_SOURCE_DIR` / `PIXELFLUX_RELEASE_SO` / `SELKIES_RUNTIME_ROOT`.
-The ones below are genuinely hardcoded:
+## Host-specific values
 
-| File | What | Effect |
-|---|---|---|
-| `scripts/run-kwin-poc.sh:14` | `[[ "${HOME:-}" == "/home/rakko" ]] \|\| die` | **Hard-refuses** to run under any other user; fix this first if you want to run the isolated KWin PoC yourself. |
-| `desktop/selkies-kwin-wayland.desktop:6` | `Exec=` | Desktop launcher entry. |
-| `desktop/selkies-kwin-poc.desktop:4` | `Exec=` | Desktop launcher entry. |
-| `pixelflux/desktop/selkies-kwin-poc.desktop:4` | `Exec=` | Same file, vendored a second time inside `pixelflux/` (upstream layout, left as-is). |
-| `scripts/run-kwin-adapter-poc.sh:45` | `sed -i "s#Exec=/home/rakko/...#"` | The match string used to rewrite the `.desktop` file above — tied to it, so it moves together. |
+Paths, the deployment user and similar per-host values are meant to come
+from the environment rather than from the files themselves: scripts take
+`${VAR:-$HOME/...}` defaults, and manifest rows of kind `render` have
+`@HOME@`/`@USER@`/`@RAKKORD_*@` placeholders filled in by
+`scripts/deploy-host.sh` from `~/.config/rakkord/env`. Some files were
+copied verbatim from the author's host (the `system/` fragments, the
+Sunshine config, the isolated KWin bring-up scripts) and may still assume
+its layout, LAN range or GPU; read them before installing.
 
-None of these are fixed here — this repository documents behavior, it
-doesn't refactor it as part of an unrelated cleanup. A reasonable fix, if
-you want one: template the `.desktop` `Exec=` line at install time (a
-`@CMAKE_INSTALL_PREFIX@`-style placeholder, substituted by whatever
-installs it) and replace the `run-kwin-poc.sh` username assertion with a
-check that the directories it actually needs exist, rather than checking
-whose home directory it is.
+## Pinned versions
+
+The KWin patches are against `v6.3.6` and are not upstreamed; the session
+runs the patched build from its own prefix rather than replacing the
+distro's KWin. Selkies and pixelflux are pinned to the revisions in
+`source-revisions.env`. Moving any of them means re-applying the changes
+summarized in the top-level README.
+
+## Input paths
+
+Smooth scrolling sends fractional axis values only on the Wayland
+(`fake_input`) path; X11 and uinput still accumulate them into whole
+wheel clicks. The IME caret relay only knows about Qt apps that talk to
+the fcitx portal; other apps fall back to the client's own estimate.
 
 ## Build artifacts aren't in the repository
 
 The compiled `.so`/binaries this project produces (`libpixelflux.so`,
-`selkieskwinadapter.so`, a patched `kwin_wayland`) are not committed —
-`.gitignore` excludes `build/` and `target/` on purpose. You build
-`kwin/` + `kwin-adapter/` and `pixelflux/` yourself; see
+`selkieskwinadapter.so`, a patched `kwin_wayland`, the Sunshine input
+bridge) are not committed — `.gitignore` excludes them on purpose. You
+build `kwin/` + `kwin-adapter/` and `pixelflux/` yourself; see
 [`deploy/README.md`](deploy/README.md) for how the pieces fit together at
 runtime.

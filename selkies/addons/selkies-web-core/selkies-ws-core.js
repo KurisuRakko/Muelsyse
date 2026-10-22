@@ -28,7 +28,8 @@
  * and `0x05` gzipped large text once the server echoed `_gz,1`. Text messages
  * are control. The client sends `SETTINGS,{json}`, `r,WxH,displayId`,
  * `START_VIDEO`, `STOP_VIDEO`, `START_AUDIO`, `STOP_AUDIO`,
- * `REQUEST_KEYFRAME`, `CLIENT_FRAME_ACK <id> <heldMs>`, `cr`, `REQUEST_CLIPBOARD`, the
+ * `REQUEST_KEYFRAME`, `CLIENT_FRAME_ACK <id> <heldMs>`, `RD_PERF_CLIENT {json}`
+ * (the per-second pipeline meter, `rdPerf`), `cr`, `REQUEST_CLIPBOARD`, the
  * chunked clipboard upload of lib/clipboard-worker-bridge.js,
  * `cmd,<command>`, `SET_NATIVE_CURSOR_RENDERING,<0|1>`,
  * `vp,<originX>,<originY>,<scaleX>,<scaleY>` (this page's stream box on the
@@ -64,10 +65,10 @@
  * `settings`, `getStats`, `clipboardUpdateFromUI`, `clipboardImageUpdate`,
  * `pipelineStatusUpdate`, `pipelineControl`, `audioDeviceSelected`,
  * `gamepadControl`, `requestFullscreen`, `command`, `touchinput:trackpad`,
- * `touchinput:touch` and `sidebarVisibilityChanged`, and posts
+ * `touchinput:touch`, `touchinput:options` and `sidebarVisibilityChanged`, and posts
  * `pipelineStatusUpdate`, `sidebarButtonStatusUpdate`, `serverSettings`,
  * `systemApps`, `stats` (to the parent window), `clientRoleUpdate`,
- * `effectiveCursorState`, `scalingDpiFollowed`, `trackpadModeUpdate`,
+ * `effectiveCursorState`, `scalingDpiFollowed`, `trackpadModeUpdate`, `touchOptionsUpdate`,
  * `clipboardContentUpdate`, the clipboard preview of lib/clipboard-sync.js,
  * `fileUpload`,
  * `toggleDashboard` and `toggleTouchGamepad`. The `window` globals it
@@ -80,7 +81,9 @@
  * `currentAudioUnderrunSamples`, `currentAudioWorkletDropped`,
  * `currentAudioDropped`, `manual_resolution`, `enable_resize`,
  * `streamResolutionDiverged`, `isAudioInitializing`, `isFallingBack`,
- * `isCleaningUp`, `applyTimestamp` and `selkiesTransport` (the page-side
+ * `isCleaningUp`, `applyTimestamp`, `__rdPerf` (the pipeline meter's
+ * counters, which lib/input.js adds its pointer counts to) and
+ * `selkiesTransport` (the page-side
  * handle on the session socket, which itself runs in a worker), plus one
  * `window[key]` per server setting mirrored by sanitizeAndStoreSettings.
  *
@@ -113,7 +116,8 @@ import {
 } from './lib/clipboard-sync.js';
 import { ClipboardWorkerBridge, sendClipboardChunked } from './lib/clipboard-worker-bridge.js';
 import { streamDensity as streamDensityOf, autoScalingDpi, publishedScale,
-         DEFAULT_DPI, DEFAULT_RENDER_SCALE, RENDER_SCALE_STOPS } from './lib/stream-density.js';
+         DEFAULT_DPI, DEFAULT_RENDER_SCALE, RENDER_SCALE_STOPS,
+         DEFAULT_STREAM_PIXEL_BUDGET, budgetedScalingDpi } from './lib/stream-density.js';
 import {
   createFileUploader
 } from './lib/file-upload.js';
@@ -431,7 +435,25 @@ let currentEncoderMode = 'h264enc-striped';
  */
 function streamDensity() {
   return streamDensityOf({ renderScale: renderScale / 100,
-                           manual: window.manual_resolution });
+                           manual: window.manual_resolution,
+                           css: streamBoxCssSize(),
+                           budget: streamPixelBudget });
+}
+/**
+ * The server's framebuffer pixel budget (`stream_pixel_budget`), until the
+ * server says otherwise; `streamDensity` lowers the render scale to fit it.
+ */
+let streamPixelBudget = DEFAULT_STREAM_PIXEL_BUDGET;
+/**
+ * The CSS size of the box the stream is drawn in, which the density multiplies
+ * into a framebuffer; null before the container exists.
+ * @returns {(number[]|null)}
+ */
+function streamBoxCssSize() {
+  const box = document.querySelector('.video-container');
+  if (!box) return null;
+  const rect = box.getBoundingClientRect();
+  return (rect.width > 0 && rect.height > 0) ? [rect.width, rect.height] : null;
 }
 /** The density the last request was built on; a change re-requests on a secondary. */
 let appliedStreamDensity = 0;
@@ -457,6 +479,11 @@ function followStreamDensity() {
   }
 }
 let trackpadMode = false;
+/** Direct-touch options the dashboard sets, passed to `Input.setTouchOptions`. */
+let touchOptions = { native: true, swipeScroll: true, longPressMs: 600, pinchZoom: true, inertia: true };
+/** Whether the server delivers native touch (`native_touch` in `server_settings`). */
+let serverNativeTouch = false;
+const touchOptionsForDashboard = () => ({ ...touchOptions, nativeAvailable: serverNativeTouch });
 let scalingDPI = DEFAULT_DPI;
 const SCALING_DPI_STOPS = [96, 120, 144, 168, 192];
 const normalizeScalingDpi = (value, fallback = DEFAULT_DPI) => {
@@ -484,12 +511,14 @@ function autoDeriveDpi() {
 /**
  * The DPI the desktop is asked for.
  *
- * 原样返回档位：服务端据此把合成器输出 scale 设为 `scalingDPI / 96`，那决定远端
- * 字体与图标的大小。这个数不参与 framebuffer 尺寸，没有什么可折算的。
+ * 服务端据此把合成器输出 scale 设为 `scalingDPI / 96`，那决定远端字体与图标的大小。
+ * 像素预算把渲染倍率降了档时，DPI 按同一比例降档（`budgetedScalingDpi`），逻辑桌面
+ * 尺寸保持不变；没降档时原样返回用户选的档位。
  * @returns {number}
  */
 function effectiveScalingDpi() {
-  return scalingDPI;
+  if (window.manual_resolution) return scalingDPI;
+  return budgetedScalingDpi(scalingDPI, renderScale / 100, streamDensity());
 }
 
 /**
@@ -511,6 +540,20 @@ function followDerivedDpi(reason) {
   console.log(`DPI follows ${reason}: scaling_dpi -> ${derived}.`);
   window.postMessage({ type: 'scalingDpiFollowed', value: derived }, window.location.origin);
   return true;
+}
+
+/**
+ * Adopts the server's `stream_pixel_budget` entry and re-requests the stream
+ * when it moved, so a changed budget resizes the framebuffer and the DPI with it.
+ * @param {(Object|undefined)} entry The `server_settings` entry, `{value}`.
+ * @returns {void}
+ */
+function applyStreamPixelBudget(entry) {
+  if (!entry || !Number.isFinite(entry.value) || entry.value < 0) return;
+  if (entry.value === streamPixelBudget) return;
+  streamPixelBudget = entry.value;
+  console.log(`Stream pixel budget: ${streamPixelBudget || 'off'}.`);
+  if (!isSharedMode && !window.manual_resolution) reapplyStreamDensity('stream pixel budget');
 }
 
 /**
@@ -589,6 +632,18 @@ let macCmdAsCtrl = true;
 function applyMacCmdAsCtrl() {
     if (window.webrtcInput && typeof window.webrtcInput.setMacCmdAsCtrl === 'function') {
         window.webrtcInput.setMacCmdAsCtrl(macCmdAsCtrl);
+    }
+}
+/**
+ * Whether wheel input goes out as `ws` axis deltas: on only once the server's
+ * settings payload offers `smooth_scroll` switched on, so a server that
+ * predates the verb keeps the `m2` scroll clicks it understands.
+ */
+let smoothScroll = false;
+/** Applies the smooth scroll setting to the input handler. */
+function applySmoothScroll() {
+    if (window.webrtcInput && typeof window.webrtcInput.setSmoothScroll === 'function') {
+        window.webrtcInput.setSmoothScroll(smoothScroll);
     }
 }
 /** Publishes the real viewport height as the `--vh` CSS unit (mobile browser chrome excluded). */
@@ -1126,6 +1181,13 @@ scaleLocallyManual = getBoolParam('scaleLocallyManual', true);
 window.manual_resolution = getBoolParam('manual_resolution', false);
 isGamepadEnabled = getBoolParam('isGamepadEnabled', true);
 trackpadMode = getBoolParam('trackpadMode', false);
+touchOptions = {
+  native: getBoolParam('touchNative', true),
+  swipeScroll: getBoolParam('touchSwipeScroll', true),
+  longPressMs: getIntParam('touchLongPressMs', 600),
+  pinchZoom: getBoolParam('touchPinchZoom', true),
+  inertia: getBoolParam('touchInertia', true),
+};
 rateControlMode = getStringParam('rate_control_mode', rateControlMode);
 videoBitrate = getIntParam('video_bitrate', videoBitrate);
 antiAliasingEnabled = getBoolParam('antiAliasingEnabled', true);
@@ -1354,6 +1416,243 @@ const parseAvcCodecFromAnnexB = (bytes) => {
   return null;
 };
 
+/**
+ * RakkoRD pipeline meter: once a second it reports where the video path
+ * between pointer and glass loses frames, to the console as `[RD_PERF]` and
+ * to the server as `RD_PERF_CLIENT {json}`. Off unless the server's
+ * `server_settings` carries `rakkord_perf: true`, the URL has `rdperf=1` or
+ * localStorage holds `rakkord_perf=1`; off, every counting point costs one
+ * `rdPerf.on` test and no timer, rAF loop or frame callback runs.
+ *
+ * The counters live on `window.__rdPerf` so lib/input.js can add `mm`
+ * (mousemove events), `mm_coal` (their coalesced events) and `mv` (motion
+ * messages sent) without importing this module. Here: `rx` distinct frame
+ * ids received, `dec` decoder outputs with `dec_ms` the decode() to output
+ * latency, `dec_q_max` the deepest decode queue seen, the `drop_*` reasons a
+ * frame never reached a sink, and `pres` frames presented -- on a `<video>`
+ * sink the `presentedFrames` delta of a requestVideoFrameCallback loop
+ * (`pres_cb` its callbacks, `pres_iv` the spacing of their
+ * `expectedDisplayTime`), on a canvas each draw to the visible surface. The
+ * video worker keeps the same counters for what it receives, decodes and
+ * draws, and posts them once a second as `rdPerfStats`, so its share lands
+ * in the page's next report. Intervals are `[p50, p95, max]` in ms over at
+ * most `RD_PERF_SAMPLE_CAP` samples a second, null without samples; a gap of
+ * a second or more is an idle stretch, not a stall, and is not sampled.
+ */
+const RD_PERF_SAMPLE_CAP = 512;
+/** Map entries of decode() times awaiting their output, past which they are stale. */
+const RD_PERF_DECODE_TRACK_CAP = 64;
+const rdPerf = {
+  on: false,
+  mm: 0, mm_coal: 0, mv: 0, mv_iv: [], mv_last: 0,
+  rx: 0, rx_iv: [], rxLast: 0, rxLastId: -1,
+  dec: 0, decSum: 0, decN: 0, decMax: 0, decQMax: 0,
+  drop_sink: 0, drop_overload: 0, drop_inflight: 0,
+  pres: 0, pres_cb: 0, pres_iv: [], presLast: 0,
+  raf: 0, hw: null, hwProbed: false, lastConfig: null, uaSent: false,
+  decodeAt: new Map(),
+  rvfcGen: 0, rvfcEl: null, rvfcHandle: 0,
+  rvfcLastCb: 0, rvfcLastExpected: 0, rvfcLastPresented: -1,
+};
+window.__rdPerf = rdPerf;
+
+/**
+ * Samples the interval since `last` into `arr`.
+ * @param {number[]} arr
+ * @param {number} now
+ * @param {number} last 0 when there is no previous event.
+ */
+function rdPerfInterval(arr, now, last) {
+  const iv = now - last;
+  if (last > 0 && iv < 1000 && arr.length < RD_PERF_SAMPLE_CAP) arr.push(iv);
+}
+
+/**
+ * The `[p50, p95, max]` of a second's interval samples, rounded to 0.1 ms.
+ * @param {number[]} arr Sorted in place.
+ * @returns {(number[]|null)}
+ */
+function rdPerfTriple(arr) {
+  if (!arr.length) return null;
+  arr.sort((a, b) => a - b);
+  const at = (q) => arr[Math.max(0, Math.ceil(q * arr.length) - 1)];
+  const r1 = (v) => Math.round(v * 10) / 10;
+  return [r1(at(0.5)), r1(at(0.95)), r1(arr[arr.length - 1])];
+}
+
+/** Counts a received video frame id on the page. @param {number} frameId */
+function rdPerfNoteRx(frameId) {
+  if (frameId === rdPerf.rxLastId) return;
+  const now = performance.now();
+  rdPerf.rxLastId = frameId;
+  rdPerf.rx++;
+  rdPerfInterval(rdPerf.rx_iv, now, rdPerf.rxLast);
+  rdPerf.rxLast = now;
+}
+
+/**
+ * Notes a page-side decode() call.
+ * @param {VideoDecoder} decoder
+ * @param {?number} timestamp The chunk timestamp to match its output by;
+ *     null where timestamps are not unique (the striped frame ids).
+ */
+function rdPerfNoteDecode(decoder, timestamp) {
+  if (decoder.decodeQueueSize > rdPerf.decQMax) rdPerf.decQMax = decoder.decodeQueueSize;
+  if (timestamp === null) return;
+  if (rdPerf.decodeAt.size >= RD_PERF_DECODE_TRACK_CAP) rdPerf.decodeAt.clear();
+  rdPerf.decodeAt.set(timestamp, performance.now());
+}
+
+/** Counts a page decoder output. @param {number} timestamp */
+function rdPerfNoteDecoded(timestamp) {
+  rdPerf.dec++;
+  const t0 = rdPerf.decodeAt.get(timestamp);
+  if (t0 === undefined) return;
+  rdPerf.decodeAt.delete(timestamp);
+  const ms = performance.now() - t0;
+  rdPerf.decSum += ms; rdPerf.decN++;
+  if (ms > rdPerf.decMax) rdPerf.decMax = ms;
+}
+
+/** Counts a frame drawn to the visible page canvas. */
+function rdPerfNotePresentDraw() {
+  const now = performance.now();
+  rdPerf.pres++;
+  rdPerfInterval(rdPerf.pres_iv, now, rdPerf.presLast);
+  rdPerf.presLast = now;
+}
+
+/**
+ * Records, once per enable, whether the current decoder config would get a
+ * hardware decoder and whether it is pinned to software.
+ * @param {VideoDecoderConfig} config
+ */
+function rdPerfProbeHw(config) {
+  if (rdPerf.hwProbed || typeof VideoDecoder === 'undefined') return;
+  rdPerf.hwProbed = true;
+  const forcedSw = config.hardwareAcceleration === 'prefer-software';
+  VideoDecoder.isConfigSupported({ ...config, hardwareAcceleration: 'prefer-hardware' })
+    .then((r) => { rdPerf.hw = { prefer_hw_supported: !!(r && r.supported), forced_sw: forcedSw }; })
+    .catch(() => { rdPerf.hw = { prefer_hw_supported: false, forced_sw: forcedSw }; });
+}
+
+/**
+ * Folds a second of the video worker's counters into the page's.
+ * @param {Object} s The worker's `rdPerfStats` payload.
+ */
+function rdPerfMergeWorker(s) {
+  if (!rdPerf.on || !s) return;
+  rdPerf.rx += s.rx; rdPerf.dec += s.dec;
+  rdPerf.decSum += s.decSum; rdPerf.decN += s.decN;
+  if (s.decMax > rdPerf.decMax) rdPerf.decMax = s.decMax;
+  if (s.decQMax > rdPerf.decQMax) rdPerf.decQMax = s.decQMax;
+  rdPerf.drop_sink += s.drop_sink; rdPerf.drop_overload += s.drop_overload;
+  rdPerf.pres += s.pres;
+  for (const v of s.rx_iv) { if (rdPerf.rx_iv.length >= RD_PERF_SAMPLE_CAP) break; rdPerf.rx_iv.push(v); }
+  for (const v of s.pres_iv) { if (rdPerf.pres_iv.length >= RD_PERF_SAMPLE_CAP) break; rdPerf.pres_iv.push(v); }
+  if (s.hw && !rdPerf.hw) rdPerf.hw = s.hw;
+}
+
+/**
+ * Which decode and sink pair carried the video this second.
+ * @returns {string}
+ */
+function rdPerfPath() {
+  let path;
+  if (videoDivertOn) path = (videoWorkerMode === 'vtg') ? 'worker-vtg' : 'worker-canvas';
+  else if (decodeInWorker && !workerDecodeFailed && currentEncoderMode === 'h264enc') {
+    path = (videoWorkerMode === 'vtg') ? 'page-rx-worker-vtg' : 'page-rx-worker-canvas';
+  } else if (mstgActive) path = 'page-mstg';
+  else if (videoWorkerActive) path = 'page-worker';
+  else path = 'canvas';
+  return currentEncoderMode === 'h264enc' ? path : `${path}:${currentEncoderMode}`;
+}
+
+/**
+ * One requestVideoFrameCallback on the `<video>` sink, re-armed from itself;
+ * a stale generation lets a superseded loop die.
+ * @param {number} gen
+ */
+function rdPerfArmVideoCallback(gen) {
+  if (!videoElement || typeof videoElement.requestVideoFrameCallback !== 'function') return;
+  const el = videoElement;
+  rdPerf.rvfcEl = el;
+  rdPerf.rvfcHandle = el.requestVideoFrameCallback((now, meta) => {
+    if (!rdPerf.on || gen !== rdPerf.rvfcGen) return;
+    rdPerf.pres_cb++;
+    rdPerf.rvfcLastCb = performance.now();
+    const shown = meta.presentedFrames;
+    if (rdPerf.rvfcLastPresented >= 0 && shown >= rdPerf.rvfcLastPresented) {
+      rdPerf.pres += shown - rdPerf.rvfcLastPresented;
+    }
+    rdPerf.rvfcLastPresented = shown;
+    rdPerfInterval(rdPerf.pres_iv, meta.expectedDisplayTime, rdPerf.rvfcLastExpected);
+    rdPerf.rvfcLastExpected = meta.expectedDisplayTime;
+    if (el === videoElement) rdPerfArmVideoCallback(gen);
+    else rdPerfRestartVideoCallback();
+  });
+}
+
+/** Starts a fresh frame-callback loop, abandoning any earlier one. */
+function rdPerfRestartVideoCallback() {
+  if (rdPerf.rvfcEl) {
+    try { rdPerf.rvfcEl.cancelVideoFrameCallback(rdPerf.rvfcHandle); } catch (e) { /* already fired */ }
+    rdPerf.rvfcEl = null;
+  }
+  rdPerf.rvfcLastCb = performance.now();
+  rdPerf.rvfcLastExpected = 0;
+  rdPerf.rvfcLastPresented = -1;
+  rdPerfArmVideoCallback(++rdPerf.rvfcGen);
+}
+
+/** Emits one second of counters and starts the next. */
+function rdPerfReport() {
+  const p = rdPerf;
+  // A callback armed on a source that went away may never fire again.
+  if (performance.now() - p.rvfcLastCb > 2000) rdPerfRestartVideoCallback();
+  const report = {
+    ct: Date.now(), path: rdPerfPath(), hw: p.hw, vis: document.visibilityState,
+    raf: p.raf, mm: p.mm, mm_coal: p.mm_coal, mv: p.mv, mv_iv: rdPerfTriple(p.mv_iv),
+    rx: p.rx, rx_iv: rdPerfTriple(p.rx_iv),
+    dec: p.dec, dec_ms: p.decN ? [Math.round(p.decSum / p.decN * 10) / 10, Math.round(p.decMax * 10) / 10] : null,
+    dec_q_max: p.decQMax,
+    drop_sink: p.drop_sink, drop_overload: p.drop_overload, drop_inflight: p.drop_inflight,
+    pres: p.pres, pres_cb: p.pres_cb, pres_iv: rdPerfTriple(p.pres_iv),
+  };
+  if (!p.uaSent) report.ua = navigator.userAgent;
+  p.raf = 0; p.mm = 0; p.mm_coal = 0; p.mv = 0; p.mv_iv.length = 0;
+  p.rx = 0; p.rx_iv.length = 0;
+  p.dec = 0; p.decSum = 0; p.decN = 0; p.decMax = 0; p.decQMax = 0;
+  p.drop_sink = 0; p.drop_overload = 0; p.drop_inflight = 0;
+  p.pres = 0; p.pres_cb = 0; p.pres_iv.length = 0;
+  console.log('[RD_PERF]', report);
+  if (websocket && websocket.readyState === WebSocket.OPEN) {
+    try { websocket.send('RD_PERF_CLIENT ' + JSON.stringify(report)); p.uaSent = true; } catch (e) { /* next second */ }
+  }
+}
+
+/** Turns the meter on for the rest of the page's life; idempotent. */
+function rdPerfEnable() {
+  if (rdPerf.on) return;
+  rdPerf.on = true;
+  console.info('[RD_PERF] pipeline meter on');
+  const countFrame = () => { rdPerf.raf++; requestAnimationFrame(countFrame); };
+  requestAnimationFrame(countFrame);
+  setInterval(rdPerfReport, 1000);
+  rdPerfRestartVideoCallback();
+  if (rdPerf.lastConfig) rdPerfProbeHw(rdPerf.lastConfig);
+  if (videoWorker) {
+    try { videoWorker.postMessage({ type: 'rdPerf', on: true }); } catch (e) { /* respawns fresh */ }
+  }
+}
+
+try {
+  if (new URLSearchParams(window.location.search).get('rdperf') === '1' ||
+      window.localStorage.getItem('rakkord_perf') === '1') {
+    rdPerfEnable();
+  }
+} catch (e) { /* storage blocked: the server can still turn it on */ }
+
 const VIDEO_WORKER_SRC = `
 // Video sink and optional in-worker decoder. The sink is a worker-only
 // VideoTrackGenerator (its track transferred to the page for <video>.srcObject) or a
@@ -1375,12 +1674,63 @@ const sendNeedKey = (reason) => {
 };
 const ack = () => self.postMessage({ ack: true });
 
+// The page's pipeline meter (rdPerf), worker side: off until the page sends
+// rdPerf, then this second's counters go up as rdPerfStats.
+const PERF_SAMPLE_CAP = 512;
+let perfOn = false, perfTimer = null, perfHwProbed = false, perfLastCfg = null;
+let perfRxLast = 0, perfPresLast = 0, pf = null;
+const perfDecodeAt = new Map();
+const perfReset = () => {
+  pf = { rx: 0, rx_iv: [], dec: 0, decSum: 0, decN: 0, decMax: 0, decQMax: 0,
+    drop_sink: 0, drop_overload: 0, pres: 0, pres_iv: [], hw: null };
+};
+function perfInterval(arr, now, last) {
+  const iv = now - last;
+  if (last > 0 && iv < 1000 && arr.length < PERF_SAMPLE_CAP) arr.push(iv);
+}
+function perfNoteRx() {
+  const now = performance.now();
+  pf.rx++; perfInterval(pf.rx_iv, now, perfRxLast); perfRxLast = now;
+}
+function perfNotePresentDraw() {
+  const now = performance.now();
+  pf.pres++; perfInterval(pf.pres_iv, now, perfPresLast); perfPresLast = now;
+}
+function perfNoteDecode(d, timestamp) {
+  if (d.decodeQueueSize > pf.decQMax) pf.decQMax = d.decodeQueueSize;
+  if (timestamp === null) return;
+  if (perfDecodeAt.size >= 64) perfDecodeAt.clear();
+  perfDecodeAt.set(timestamp, performance.now());
+}
+function perfNoteDecoded(timestamp) {
+  pf.dec++;
+  const t0 = perfDecodeAt.get(timestamp);
+  if (t0 === undefined) return;
+  perfDecodeAt.delete(timestamp);
+  const ms = performance.now() - t0;
+  pf.decSum += ms; pf.decN++;
+  if (ms > pf.decMax) pf.decMax = ms;
+}
+function perfProbeHw(cfg) {
+  if (perfHwProbed || typeof VideoDecoder === 'undefined') return;
+  perfHwProbed = true;
+  const forcedSw = cfg.hardwareAcceleration === 'prefer-software';
+  VideoDecoder.isConfigSupported(Object.assign({}, cfg, { hardwareAcceleration: 'prefer-hardware' }))
+    .then((r) => { pf.hw = { prefer_hw_supported: !!(r && r.supported), forced_sw: forcedSw }; })
+    .catch(() => { pf.hw = { prefer_hw_supported: false, forced_sw: forcedSw }; });
+}
+function perfNoteConfig(cfg) {
+  perfLastCfg = cfg;
+  if (perfOn) perfProbeHw(cfg);
+}
+
 // Present one decoded VideoFrame on the active sink. Consumes/closes the frame.
 function present(f) {
   if (mode === 'vtg' && writer && !closed) {
     // Drop on sink backpressure.
     if (writer.desiredSize !== null && writer.desiredSize <= 0) {
       f.close();
+      if (perfOn) pf.drop_sink++;
       if (++sinkDrops >= 30) { closed = true; self.postMessage({ type: 'error' }); }
       return;
     }
@@ -1393,6 +1743,7 @@ function present(f) {
     if (ctx) {
       if (oc.width !== f.displayWidth || oc.height !== f.displayHeight) { oc.width = f.displayWidth; oc.height = f.displayHeight; }
       ctx.drawImage(f, 0, 0);
+      if (perfOn) perfNotePresentDraw();
       // Tell the page the OffscreenCanvas has real content so it can hide the
       // main canvas (hiding it before this point flashes black).
       if (!presented) { presented = true; self.postMessage({ type: 'presented' }); }
@@ -1404,12 +1755,13 @@ function closeDecoder() {
   if (dec) { try { if (dec.state !== 'closed') dec.close(); } catch (_) {} dec = null; }
   decKey = false; decNeedKey = false;
   wireCodec = null; wireW = 0; wireH = 0;
+  perfDecodeAt.clear();
 }
 
 function configureDecoder(codec, w, h, software) {
   closeDecoder();
   try {
-    dec = new VideoDecoder({ output: present, error: () => { closeDecoder(); self.postMessage({ type: 'decoderError' }); } });
+    dec = new VideoDecoder({ output: (f) => { if (perfOn) perfNoteDecoded(f.timestamp); present(f); }, error: () => { closeDecoder(); self.postMessage({ type: 'decoderError' }); } });
     // configure() is synchronous, so the next chunk decodes without an async gap and
     // an unsupported config surfaces via error(). The page owns the acceleration
     // preference; unset, the UA default takes a hardware decoder where there is one,
@@ -1417,6 +1769,7 @@ function configureDecoder(codec, w, h, software) {
     const cfg = { codec: codec, codedWidth: w, codedHeight: h, optimizeForLatency: true };
     if (software) cfg.hardwareAcceleration = 'prefer-software';
     dec.configure(cfg);
+    perfNoteConfig(cfg);
     // A keyframe is required after (re)configure.
     decNeedKey = true;
     return true;
@@ -1431,8 +1784,12 @@ function decodeChunk(key, data, timestamp) {
     if (!decKey || decNeedKey) { sendNeedKey('no_key'); return; }
     // Decode is falling behind: drop the delta (a fresh IDR cannot unclog the
     // queue) and request a throttled resync keyframe.
-    if (dec.decodeQueueSize > OVERLOAD_QUEUE) { decNeedKey = true; sendNeedKey('overload'); return; }
+    if (dec.decodeQueueSize > OVERLOAD_QUEUE) {
+      if (perfOn) pf.drop_overload++;
+      decNeedKey = true; sendNeedKey('overload'); return;
+    }
   }
+  if (perfOn) perfNoteDecode(dec, timestamp);
   try { dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: timestamp, data: data })); }
   catch (err) { closeDecoder(); self.postMessage({ type: 'decoderError' }); }
 }
@@ -1520,6 +1877,7 @@ function stripePresent() {
       oc.width = stripeBack.width; oc.height = stripeBack.height;
     }
     try { ctx.drawImage(stripeBack, 0, 0); } catch (err) {}
+    if (perfOn) perfNotePresentDraw();
     if (!presented) { presented = true; self.postMessage({ type: 'presented' }); }
   }
 }
@@ -1584,7 +1942,10 @@ function onH264Stripe(buffer) {
   const w = (head[6] << 8) | head[7];
   const h = (head[8] << 8) | head[9];
   wireChunks++;
-  if (frameId !== wireLastId) { wireFrames++; wireLastId = frameId; }
+  if (frameId !== wireLastId) {
+    wireFrames++; wireLastId = frameId;
+    if (perfOn) perfNoteRx();
+  }
   stripeClock.note(frameId);
   const payload = buffer.slice(10);
   if (payload.byteLength === 0) return;
@@ -1603,6 +1964,7 @@ function onH264Stripe(buffer) {
     const rowY = y;
     const dec = new VideoDecoder({
       output: (f) => {
+        if (perfOn) perfNoteDecoded(null);
         const rowInfo = stripeDecs[rowY];
         const meta = rowInfo && rowInfo.meta.length ? rowInfo.meta.shift() : null;
         stripeCompose(f, rowY, f.displayHeight, meta ? meta.frameId : wireLastId);
@@ -1613,6 +1975,7 @@ function onH264Stripe(buffer) {
       const cfg = { codec: codec, codedWidth: w, codedHeight: h, optimizeForLatency: true };
       if (wireSoftware) cfg.hardwareAcceleration = 'prefer-software';
       dec.configure(cfg);
+      perfNoteConfig(cfg);
     } catch (err) {
       try { if (dec.state !== 'closed') dec.close(); } catch (e2) {}
       onStripeError(y);
@@ -1623,12 +1986,14 @@ function onH264Stripe(buffer) {
   if (!key && !info.gotKey) { sendNeedKey('no_key'); return; }
   if (!key && info.dec.decodeQueueSize > STRIPE_DECODE_QUEUE_LIMIT) {
     // Deltas behind a backlog only deepen it; the row is gated until its next IDR.
+    if (perfOn) pf.drop_overload++;
     info.gotKey = false;
     sendNeedKey('overload');
     return;
   }
   try {
     info.meta.push({ frameId: frameId });
+    if (perfOn) perfNoteDecode(info.dec, null);
     info.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: performance.now() * 1000, data: payload }));
     if (key) info.gotKey = true;
   } catch (err) {
@@ -1643,7 +2008,10 @@ function onJpegStripe(buffer) {
   const frameId = (head[2] << 8) | head[3];
   const y = (head[4] << 8) | head[5];
   wireChunks++;
-  if (frameId !== wireLastId) { wireFrames++; wireLastId = frameId; }
+  if (frameId !== wireLastId) {
+    wireFrames++; wireLastId = frameId;
+    if (perfOn) perfNoteRx();
+  }
   stripeClock.note(frameId);
   const data = buffer.slice(6);
   if (data.byteLength === 0) return;
@@ -1692,7 +2060,10 @@ function onWire(buffer) {
   const w = (head[6] << 8) | head[7];
   const h = (head[8] << 8) | head[9];
   wireChunks++;
-  if (frameId !== wireLastId) { wireFrames++; wireLastId = frameId; }
+  if (frameId !== wireLastId) {
+    wireFrames++; wireLastId = frameId;
+    if (perfOn) perfNoteRx();
+  }
   const payload = buffer.slice(10);
   let codec = wireCodec;
   if (key) {
@@ -1731,6 +2102,15 @@ self.onmessage = (e) => {
   if (m.canvas) { oc = m.canvas; ctx = oc.getContext('2d', { desynchronized: true }); if (!mode) mode = 'canvas'; return; }
   if (m.type === 'decoderConfig') { configureDecoder(m.codec, m.codedWidth, m.codedHeight, m.software); return; }
   if (m.type === 'closeDecoder') { closeDecoder(); return; }
+  if (m.type === 'rdPerf') {
+    perfOn = !!m.on;
+    if (perfOn && !perfTimer) {
+      perfReset();
+      perfTimer = setInterval(() => { self.postMessage({ type: 'rdPerfStats', stats: pf }); perfReset(); }, 1000);
+      if (perfLastCfg) perfProbeHw(perfLastCfg);
+    }
+    return;
+  }
   if (m.type === 'chunk') {
     // Not ready yet; the page will resend a keyframe.
     decodeChunk(m.key, m.data, m.timestamp);
@@ -1902,6 +2282,7 @@ function presentFrameToVideo(frame) {
   }
   if (videoFrameWriter.desiredSize !== null && videoFrameWriter.desiredSize <= 0) {
     frame.close();
+    if (rdPerf.on) rdPerf.drop_sink++;
     if (++mstgConsecutiveDrops >= SINK_STALL_DROP_LIMIT) {
       console.warn(`Video track sink stalled (${mstgConsecutiveDrops} consecutive drops); rebuilding it.`);
       deactivateMstg();
@@ -2037,6 +2418,7 @@ function ensureVideoWorker() {
     videoWorkerSpawnAttempts++;
     videoWorker = new Worker(workerURL);
     URL.revokeObjectURL(workerURL);
+    if (rdPerf.on) videoWorker.postMessage({ type: 'rdPerf', on: true });
     videoWorkerInFlight = 0;
     wireSocketToVideoWorker();
     videoWorker.onerror = (e) => { console.warn('video worker error:', e && e.message); deactivateVideoWorker(); };
@@ -2044,6 +2426,7 @@ function ensureVideoWorker() {
       const m = e.data;
       if (!m) return;
       if (m.ack) { if (videoWorkerInFlight > 0) videoWorkerInFlight--; return; }
+      if (m.type === 'rdPerfStats') { rdPerfMergeWorker(m.stats); return; }
       if (m.type === 'error') { deactivateVideoWorker(); return; }
       if (m.type === 'presented') {
         videoWorkerRendered = true;
@@ -2254,6 +2637,7 @@ function presentFrameToWorker(frame) {
   if (videoWorkerSinkInert) return false;
   if (videoWorkerInFlight >= VIDEO_WORKER_MAX_IN_FLIGHT) {
     try { frame.close(); } catch (_) {}
+    if (rdPerf.on) rdPerf.drop_inflight++;
     return true;
   }
   try {
@@ -2465,6 +2849,10 @@ body {
     display: block;
 }
 .video-container #overlayInput {
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
     opacity: 0;
     z-index: 3;
     caret-color: transparent;
@@ -2604,7 +2992,9 @@ function currentDisplayScale(density) {
     for (const id of ['videoCanvas', 'videoStream', 'videoWorkerCanvas']) {
         const el = document.getElementById(id);
         const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-        if (r && r.width > 0) { css = [r.width, r.height]; break; }
+        // A pinch-zoomed view scales the measured box; the size the stream needs does not change.
+        const zoom = (window.webrtcInput && window.webrtcInput.viewZoom) || 1;
+        if (r && r.width > 0) { css = [r.width / zoom, r.height / zoom]; break; }
     }
     const realized = (latestDisplayLayouts || {})[displayId];
     return publishedScale({
@@ -3327,6 +3717,7 @@ function processPendingChunksForStripe(stripe_y_start) {
       timestamp: pending.timestamp,
       data: pending.data
     });
+    if (rdPerf.on) rdPerfNoteDecode(decoderInfo.decoder, currentEncoderMode === 'h264enc' ? pending.timestamp : null);
     try {
       decoderInfo.decoder.decode(chunk);
     } catch (e) {
@@ -3440,6 +3831,7 @@ function ensureStripeWorker() {
     if (!m || m.type !== 'frame') return;
     if (canvasContext && canvas && canvas.width > 0 && canvas.height > 0) {
       try { canvasContext.drawImage(m.bitmap, 0, 0); } catch (err) { /* ignore */ }
+      if (rdPerf.on) rdPerfNotePresentDraw();
     }
     try { m.bitmap.close(); } catch (err) { /* ignore */ }
   };
@@ -3495,6 +3887,7 @@ function stripeCompositePresent() {
     try { stripeWorker.postMessage({ type: 'commit' }); } catch (e) { /* ignore */ }
   } else if (canvasContext && canvas.width > 0 && canvas.height > 0) {
     canvasContext.drawImage(stripeBackCanvas, 0, 0);
+    if (rdPerf.on) rdPerfNotePresentDraw();
   }
 }
 /** Newest JPEG-stripe frame id drawn per row offset, so older out-of-order stripes are skipped. */
@@ -3612,6 +4005,7 @@ function armSharedStallWatchdog() {
  * @param {VideoFrame} frame
  */
 function handleDecodedVncStripeFrame(yPos, frame) {
+  if (rdPerf.on) rdPerfNoteDecoded(frame.timestamp);
   if (currentEncoderMode === 'h264enc' && yPos === 0) {
     if (document.hidden || (clientMode === 'websockets' && !isSharedMode && !isVideoPipelineActive)) {
       try { frame.close(); } catch (e) {}
@@ -3628,6 +4022,7 @@ function handleDecodedVncStripeFrame(yPos, frame) {
     } else {
       if (canvas && canvasContext && canvas.width > 0 && canvas.height > 0) {
         canvasContext.drawImage(frame, 0, 0);
+        if (rdPerf.on) rdPerfNotePresentDraw();
       }
       try { frame.close(); } catch (e) {}
     }
@@ -3818,6 +4213,9 @@ const initializeInput = () => {
   applyEffectiveCursorSetting();
   applyRawPointerMotion();
   applyMacCmdAsCtrl();
+  applySmoothScroll();
+  inputInstance.setTouchOptions(touchOptions);
+  inputInstance.setNativeTouchAvailable(serverNativeTouch);
 
   if (overlayInput) {
     const handlePointerDown = (e) => {
@@ -4531,6 +4929,20 @@ function receiveMessage(event) {
         }
       }
       break;
+    case 'touchinput:options':
+      if (message.options && typeof message.options === 'object') {
+        const o = message.options;
+        if (typeof o.native === 'boolean') { touchOptions.native = o.native; setBoolParam('touchNative', o.native); }
+        if (typeof o.swipeScroll === 'boolean') { touchOptions.swipeScroll = o.swipeScroll; setBoolParam('touchSwipeScroll', o.swipeScroll); }
+        if (typeof o.pinchZoom === 'boolean') { touchOptions.pinchZoom = o.pinchZoom; setBoolParam('touchPinchZoom', o.pinchZoom); }
+        if (typeof o.inertia === 'boolean') { touchOptions.inertia = o.inertia; setBoolParam('touchInertia', o.inertia); }
+        if (Number.isFinite(o.longPressMs)) { touchOptions.longPressMs = o.longPressMs; setIntParam('touchLongPressMs', o.longPressMs); }
+        if (window.webrtcInput && typeof window.webrtcInput.setTouchOptions === 'function') {
+          window.webrtcInput.setTouchOptions(touchOptions);
+        }
+      }
+      window.postMessage({ type: 'touchOptionsUpdate', options: touchOptionsForDashboard() }, window.location.origin);
+      break;
     case 'touchinput:touch':
       if (window.webrtcInput && typeof window.webrtcInput.setTrackpadMode === 'function') {
         trackpadMode = false;
@@ -5137,6 +5549,7 @@ function initWebsockets() {
         } else {
           if (canvas.width > 0 && canvas.height > 0) {
             canvasContext.drawImage(frame, 0, 0);
+            if (rdPerf.on) rdPerfNotePresentDraw();
           }
           try { frame.close(); } catch (e) {}
         }
@@ -6172,6 +6585,7 @@ class WorkerWebSocket {
       try { websocket.send('_gz,1'); } catch (e) { /* handshake is best-effort */ }
     }
     window.postMessage({ type: 'trackpadModeUpdate', enabled: trackpadMode }, window.location.origin);
+    window.postMessage({ type: 'touchOptionsUpdate', options: touchOptionsForDashboard() }, window.location.origin);
     if (!isSharedMode) {
       const settingsPrefix = `${storageAppName}_`;
       const settingsToSend = {};
@@ -6243,9 +6657,9 @@ class WorkerWebSocket {
         settingsToSend['initialClientHeight'] = initH;
       }
 
-      if (settingsToSend['scaling_dpi'] === undefined) {
-        settingsToSend['scaling_dpi'] = effectiveScalingDpi();
-      }
+      // A stored pick is the user's; what goes out is that pick after the pixel
+      // budget, the same value every later SETTINGS carries.
+      settingsToSend['scaling_dpi'] = effectiveScalingDpi();
       settingsToSend['render_scale'] = renderScale;
       if (detectedKeyboardLayout) {
         settingsToSend['keyboardLayout'] = detectedKeyboardLayout;
@@ -6423,6 +6837,7 @@ class WorkerWebSocket {
 
         const jpegFrameId = dataView.getUint16(2, false);
         stripeClock.note(jpegFrameId);
+        if (rdPerf.on) rdPerfNoteRx(jpegFrameId);
         if (!isSharedMode) { lastReceivedVideoFrameId = jpegFrameId; lastReceivedVideoFrameAt = performance.now(); }
         const stripe_y_start = dataView.getUint16(4, false);
         const jpegDataBuffer = arrayBuffer.slice(jpegHeaderLength);
@@ -6443,6 +6858,7 @@ class WorkerWebSocket {
         const video_frame_type_byte = dataView.getUint8(1);
         const vncFrameID = dataView.getUint16(2, false);
         stripeClock.note(vncFrameID);
+        if (rdPerf.on) rdPerfNoteRx(vncFrameID);
         if (!isSharedMode) {
             lastReceivedVideoFrameId = vncFrameID;
             lastReceivedVideoFrameAt = performance.now();
@@ -6541,6 +6957,8 @@ class WorkerWebSocket {
                     codedHeight: stripeHeight,
                     optimizeForLatency: true
                 });
+                rdPerf.lastConfig = decoderConfig;
+                if (rdPerf.on) rdPerfProbeHw(decoderConfig);
                 vncStripeDecoders[vncStripeYStart] = {
                     decoder: newStripeDecoder,
                     pendingChunks: [],
@@ -6582,6 +7000,7 @@ class WorkerWebSocket {
                 if (chunkType === 'key') {
                     decoderInfo.hasReceivedKeyframe = true;
                 } else if (decoderInfo.decoder.decodeQueueSize > STRIPE_DECODE_QUEUE_LIMIT) {
+                    if (rdPerf.on) rdPerf.drop_overload++;
                     decoderInfo.hasReceivedKeyframe = false;
                     requestKeyframe();
                     return;
@@ -6597,6 +7016,7 @@ class WorkerWebSocket {
                 };
                 if (decoderInfo.decoder.state === "configured") {
                     const chunk = new EncodedVideoChunk(chunkData);
+                    if (rdPerf.on) rdPerfNoteDecode(decoderInfo.decoder, currentEncoderMode === 'h264enc' ? chunkTimestamp : null);
                     try {
                         decoderInfo.decoder.decode(chunk);
                     } catch (e) {
@@ -6871,6 +7291,8 @@ class WorkerWebSocket {
             if (typeof obj.bandwidth_mbps === 'number') networkStat.bandwidthMbps = obj.bandwidth_mbps;
           }
           else if (obj.type === 'server_settings') {
+              if (obj.rakkord_perf === true) rdPerfEnable();
+              applyStreamPixelBudget(obj.settings && obj.settings.stream_pixel_budget);
               if (displayId !== 'primary' && obj.settings.second_screen && obj.settings.second_screen.value === false) {
                   console.error("The server reports no second display is available. This client will not function.");
                   if (statusDisplayElement) {
@@ -6915,6 +7337,15 @@ class WorkerWebSocket {
               // for an unlocked bool keeps the client's persisted value.
               const ce = obj.settings && obj.settings.command_enabled;
               serverCommandEnabled = (ce && typeof ce.value === 'boolean') ? ce.value : true;
+              const nt = obj.settings && obj.settings.native_touch;
+              const nativeTouch = !!(nt && nt.value === true);
+              if (nativeTouch !== serverNativeTouch) {
+                  serverNativeTouch = nativeTouch;
+                  if (window.webrtcInput && typeof window.webrtcInput.setNativeTouchAvailable === 'function') {
+                      window.webrtcInput.setNativeTouchAvailable(serverNativeTouch);
+                  }
+                  window.postMessage({ type: 'touchOptionsUpdate', options: touchOptionsForDashboard() }, window.location.origin);
+              }
               // The start policy reads the server values (same reasoning as
               // command_enabled) and runs before the held initial audio
               // request is resolved, so nothing is started only to be stopped.
@@ -6956,6 +7387,10 @@ class WorkerWebSocket {
                   macCmdAsCtrl = cmdAsCtrl;
                   applyMacCmdAsCtrl();
               }
+              const ss = obj.settings && obj.settings.smooth_scroll;
+              smoothScroll = !!ss && typeof ss.value === 'boolean'
+                && (ss.locked ? ss.value : getBoolParam('smooth_scroll', ss.value));
+              applySmoothScroll();
               // 锁定值必须直接同步到已经创建的输入层，不能只依赖 changes 回传。
               const cursorSetting = obj.settings && obj.settings.use_browser_cursors;
               if (cursorSetting && typeof cursorSetting.value === 'boolean') {
@@ -7129,6 +7564,16 @@ class WorkerWebSocket {
             }
           } catch (e) {
             console.error('Error parsing cursor data:', e);
+          }
+        } else if (event.data.startsWith('ime_caret,')) {
+          try {
+            const caret = JSON.parse(event.data.substring(10));
+            if (displayId === 'primary' && window.webrtcInput &&
+                typeof window.webrtcInput.setImeCaret === 'function') {
+              window.webrtcInput.setImeCaret(caret);
+            }
+          } catch (e) {
+            console.error('Error parsing ime_caret data:', e);
           }
         } else if (event.data.startsWith('clipboard_reply,')) {
             if (event.data.substring(16) === 'cr') armTaggedClipboardReply();
@@ -7457,6 +7902,9 @@ class WorkerWebSocket {
    */
   websocket.onclose = (event) => {
     console.log('[websockets] Connection closed', event);
+    if (window.webrtcInput && typeof window.webrtcInput.clearPendingScroll === 'function') {
+        window.webrtcInput.clearPendingScroll();
+    }
     // The auth probe reloads the page when the origin now answers 401.
     if (window.__selkiesAuthProbe) window.__selkiesAuthProbe();
     if (event.code === 4001) {

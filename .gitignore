@@ -7,13 +7,18 @@ node_modules/
 *.so
 *.pyc
 .pytest_cache/
-CMakeFiles/
-CMakeCache.txt
 
 # 主机部署侧（原 newpcsetup）
 .DS_Store
 config/*.env
 !config/*.env.example
 
-# 本地编码助手配置，不随仓库发布
+# Sunshine input bridge 的构建产物（sunshine/input-bridge，make 在源码目录里出产物）
+sunshine/input-bridge/rakkord-sunshine-input-bridge
+sunshine/input-bridge/test/uinput-dev
+sunshine/input-bridge/test/wl-input-probe
+
+# Public export only
+CMakeFiles/
+CMakeCache.txt
 .claude/

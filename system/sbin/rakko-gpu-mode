@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+# rakko-gpu-mode —— 在「纯 NVIDIA」与「方案 A（Intel 渲染 + NVIDIA 只做 CUDA）」之间一键切换。
+#
+# 安装位置：/usr/local/sbin/rakko-gpu-mode（仓库源文件 system/sbin/rakko-gpu-mode，由部署脚本按 deploy/manifest.tsv 安装）
+#
+#   sudo rakko-gpu-mode status            # 只读：配置模式 + 运行状态（默认动作）
+#   sudo rakko-gpu-mode nvidia [--dry-run]# 下次重启后：只有 P620，KWin/Selkies/Sunshine 全走 NVIDIA
+#   sudo rakko-gpu-mode intel  [--dry-run]# 下次重启后：回到任务 005 的方案 A
+#
+# 两种模式的文件差异（只碰 /etc/modprobe.d、/etc/modules-load.d 下 rakko 自己的文件，
+# 不改任何包自带文件）：
+#
+#   nvidia 模式：
+#     /etc/modprobe.d/00-rakko-gpu-mode.conf
+#         install  i915          /bin/true      # i915 不加载（install 规则，不是 blacklist）
+#         blacklist i915
+#         install  nouveau       /bin/true      # 防止 nouveau 抢在 nvidia 之前 probe P620
+#         blacklist nouveau
+#         options  nvidia-drm          modeset=1
+#         options  nvidia-current-drm  modeset=1   # 仅当内核里还有 Debian 打包的 nvidia-current* 时
+#     /etc/modules-load.d/zz-rakko-nvidia-drm.conf   -> nvidia-drm
+#     /etc/modules-load.d/zz-rakko-nvidia-cuda.conf  -> nvidia / nvidia-uvm（005 起就有的共用文件）
+#
+#   intel 模式（= 005 的方案 A，逐条等价）：
+#     /etc/modprobe.d/00-rakko-gpu-mode.conf
+#         install  nvidia-drm /bin/true ...（含 nvidia-current-* 真名，006 R1 的加固）
+#         blacklist ...
+#     /etc/modules-load.d/zz-rakko-nvidia-cuda.conf  -> nvidia / nvidia-uvm
+#     （不创建 zz-rakko-nvidia-drm.conf）
+#
+# 模块名的两种打包（任务 010 起两种都要支持，见 legacy_nvidia_module_present()）：
+#   * Debian 打包（550.163.01 及更早，包名 nvidia-kernel-dkms，source nvidia-graphics-drivers）：
+#     DKMS 模块名是 **nvidia-current**，真正的 .ko 叫 nvidia-current.ko / nvidia-current-drm.ko /
+#     nvidia-current-modeset.ko / nvidia-current-uvm.ko；并在 /etc/modprobe.d/nvidia.conf 里用
+#     `install nvidia-drm modprobe -i nvidia-current-drm` 这样的转发规则把"干净名"映射过去。
+#     所以只写 `options nvidia-drm modeset=1` 是不够的，必须同时写归一化后的 nvidia-current-drm。
+#   * NVIDIA 官方 CUDA repo 的打包（580.178.04，同一个包名 nvidia-kernel-dkms）：
+#     dkms.conf 里 BUILT_MODULE_NAME / DEST_MODULE_NAME 都是真名 ——
+#     nvidia / nvidia-modeset / nvidia-drm / nvidia-uvm / nvidia-peermem。
+#     包自带的 /etc/modprobe.d/nvidia.conf 只有 `blacklist nouveau/nova-core` 与
+#     `options nvidia NVreg_*`，**没有任何 install 转发链**；
+#     modeset=1 由包自带的 /etc/modprobe.d/nvidia-modeset.conf 提供。
+#   本脚本用 legacy_nvidia_module_present() 现场探测内核里有没有 nvidia-current*，
+#   只在有它的时侯才多写那一行 —— 这样"回退到 Debian 550"时不用改脚本，580 下也不留废行。
+#
+# 为什么 i915 用 `install ... /bin/true` 而不是 blacklist：
+#   kmod 34.2 对同一模块的多条 install 规则是「文件名按字典序先扫描到的生效」（005 用假模块名
+#   实测过：aa- 赢 zz-）。blacklist 只影响 modalias/自动加载，挡不住按模块名显式 modprobe。
+#   install 规则则对两条路径都生效（`modprobe i915` 与 udev 的 modalias → i915 都走它）。
+#   `00-` 前缀同时保证排在包自带的 nvidia.conf / nvidia-modeset.conf（'n' > '0'）之前。
+#
+# 为什么 nvidia 模式要 modeset=1（依据）：
+#   * NVIDIA README Chapter 40B（GBM 要求）："DRM KMS must be enabled"；Chapter 36 说明
+#     DRM KMS 由 nvidia-drm 的 modeset=1 打开。KWin 的 --virtual 后端走 GBM+EGL
+#     （kwin/src/backends/virtual/virtual_egl_backend.cpp:103-124 用 EGL_PLATFORM_GBM_KHR），
+#     没有 GBM backend 就起不来。
+#   * Sunshine 在 display_is_nvidia=true 时走 cuda::make_avcodec_gl_encode_device，它用
+#     open_drm_fd_for_cuda_device() 去 /sys/bus/pci/devices/<pci>/drm/ 下找 **card*** 节点
+#     （src/platform/linux/cuda.cpp:354-393）—— 只有 modeset=1 才注册 card 节点。
+#   * fbdev=1 不需要：本机无头、无 DM，控制台由 efifb 提供，不需要 nvidia 再注册 framebuffer
+#     设备；多一个 fbdev 只会多一处与 efifb 抢控制台的可能。
+#
+#   * fbdev=1 不需要（任务 007 结论，任务 010 复核后维持）：本机无头、无 DM，
+#     控制台由 efifb 提供，不需要 nvidia 再注册 framebuffer 设备；多一个 fbdev 只会多
+#     一处与 efifb 抢控制面的可能。NVIDIA 官方 580 打包也只在 nvidia-modeset.conf 里写
+#     modeset=1，没有开 fbdev。
+#
+# 本脚本只写配置 + 重建 initramfs，**不加载/卸载模块、不重启、不启停服务**。
+# 生效需要重启：`sudo reboot`。
+
+set -uo pipefail
+
+MODPROBE_FILE="/etc/modprobe.d/00-rakko-gpu-mode.conf"
+LEGACY_MODPROBE_FILE="/etc/modprobe.d/00-rakko-no-nvidia-drm.conf"
+MODULESLOAD_DRM="/etc/modules-load.d/zz-rakko-nvidia-drm.conf"
+MODULESLOAD_CUDA="/etc/modules-load.d/zz-rakko-nvidia-cuda.conf"
+# Debian 打包留下的 alternatives 符号链接（指向 glx--nvidia-load.conf）。装 NVIDIA 官方
+# 580 包之后它可能变成悬空链接，systemd-modules-load 会在开机时报 "No such file or directory"。
+PACKAGING_MODULESLOAD_LINK="/etc/modules-load.d/nvidia.conf"
+
+MODE_MARKER_PREFIX="# rakko-gpu-mode:"
+
+# ---------------------------------------------------------------- 输出helpers
+if [ -t 1 ]; then
+    C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_OFF=$'\033[0m'
+else
+    C_RED=''; C_GREEN=''; C_YELLOW=''; C_OFF=''
+fi
+
+die()  { printf '%serror%s: %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*"; }
+warn() { printf '%swarn%s: %s\n' "$C_YELLOW" "$C_OFF" "$*" >&2; }
+
+require_root() {
+    [ "$(id -u)" = 0 ] || die "需要 root：sudo $0 $*"
+}
+
+# ---------------------------------------------------------------- 打包探测
+# modinfo 在 /usr/sbin（= ../bin/kmod），普通用户 PATH 里没有；本脚本可能被
+# `sudo` 拉起（secure_path 里有 /usr/sbin）也可能不是，这里显式解析一次。
+MODINFO_BIN="$(command -v modinfo 2>/dev/null || true)"
+if [ -z "$MODINFO_BIN" ]; then
+    for _c in /usr/sbin/modinfo /sbin/modinfo; do
+        [ -x "$_c" ] && { MODINFO_BIN="$_c"; break; }
+    done
+fi
+MODINFO_BIN="${MODINFO_BIN:-modinfo}"
+
+# 内核模块里到底有没有 Debian 打包的 nvidia-current*（550 时代）。
+# 有 -> 需要额外写 options/install 的归一化模块名；没有（NVIDIA 官方 580 打包）-> 真名即可。
+# 判据顺序：modinfo 直接读 .ko（不受 install/blacklist 规则影响）→ 兜底看 dkms 输出目录。
+legacy_nvidia_module_present() {
+    local kver="${1:-$(uname -r)}"
+    "$MODINFO_BIN" -k "$kver" nvidia-current-drm >/dev/null 2>&1 && return 0
+    "$MODINFO_BIN" -k "$kver" nvidia-current     >/dev/null 2>&1 && return 0
+    local d
+    for d in "/lib/modules/$kver" "/usr/lib/modules/$kver"; do
+        compgen -G "$d/updates/dkms/nvidia-current*.ko*" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------- 配置内容
+modprobe_conf_body() {
+    local legacy=0
+    legacy_nvidia_module_present && legacy=1
+    case "$1" in
+        nvidia)
+            cat <<'EOF'
+# 由 rakko-gpu-mode 生成 —— 不要手改，改模式请跑 `sudo rakko-gpu-mode <nvidia|intel>`。
+#
+# 纯 NVIDIA 模式：Intel 核显不加载，P620 提供 DRM KMS + render 节点 + CUDA/NVENC。
+# nvidia-drm modeset=1 是 KWin(--virtual, GBM/EGL) 与 Sunshine(NVENC_GL 需要 card 节点)
+# 的硬要求，依据见脚本头部注释。
+install i915 /bin/true
+blacklist i915
+# nouveau 若抢在 nvidia 之前 probe P620，nvidia 会 "GPU is already bound to nouveau" 而失败，
+# 整个模式就失去意义；这里连显式 modprobe 一起挡住。
+install nouveau /bin/true
+blacklist nouveau
+# 包自带的 /etc/modprobe.d/nvidia-modeset.conf 也写了同一条；这里显式再写一遍，
+# 保证那个包文件被改掉/删掉时 modeset=1 仍然生效。
+options nvidia-drm modeset=1
+EOF
+            if [ "$legacy" = 1 ]; then
+                cat <<'EOF'
+# 内核里还有 Debian 打包的 nvidia-current*（550 时代）：包自带的 install 规则把
+# `modprobe nvidia-drm` 转发成 `modprobe -i nvidia-current-drm`，真正被 insmod 的是
+# 归一化后的 nvidia_current_drm —— 只写 nvidia-drm 的 options 不会生效。
+options nvidia-current-drm modeset=1
+EOF
+            fi
+            ;;
+        intel)
+            cat <<'EOF'
+# 由 rakko-gpu-mode 生成 —— 不要手改，改模式请跑 `sudo rakko-gpu-mode <nvidia|intel>`。
+#
+# 方案 A 回退模式（任务 005）：nvidia-drm / nvidia-modeset 不加载 -> NVIDIA 没有 DRM
+# 节点 -> KWin --virtual 只能选 Intel -> Selkies 同卡零拷贝 VAAPI；NVIDIA 只留 CUDA/NVENC
+# 给 Sunshine（capture=portal 走共享内存上传，不需要 DRM 节点）。
+#
+# 用 install 而不是 blacklist：包自带的 /etc/modprobe.d/nvidia-modeset.conf 里有
+# `options nvidia-drm modeset=1`，而且 /etc/modules-load.d 下可能有显式
+# `modprobe nvidia-drm` 的请求，blacklist 挡不住显式 modprobe。
+# `/bin/true`（而不是 /bin/false）让这次请求"成功但什么都不做"，避免开机出现 failed 单元。
+# 文件名的 `00-` 前缀是必须的：kmod 按字典序取第一条匹配的 install 规则，
+# 必须排在包自带的 nvidia.conf / nvidia-modeset.conf 之前。
+install nvidia-drm /bin/true
+install nvidia-modeset /bin/true
+blacklist nvidia-drm
+blacklist nvidia-modeset
+# 006 R1：install/blacklist 只按名字匹配，Debian 打包（550 及更早）的真实模块名也要挡住。
+# NVIDIA 官方 580 打包用的是真名（nvidia-drm / nvidia-modeset），下面四行那时是惰性的
+# ——留着是为了"回退到 Debian 550"时不用改脚本（见 legacy_nvidia_module_present()）。
+install nvidia-current-drm /bin/true
+install nvidia-current-modeset /bin/true
+blacklist nvidia-current-drm
+blacklist nvidia-current-modeset
+EOF
+            ;;
+        *) die "未知模式 $1" ;;
+    esac
+}
+
+modulesload_drm_body() {
+    cat <<'EOF'
+# 由 rakko-gpu-mode 生成（nvidia 模式专用）。
+# Debian 打包（550）留下的 /etc/modules-load.d/nvidia.conf 是一个 alternatives 符号链接，
+# 装了 NVIDIA 官方 580 包之后可能悬空甚至被改成别的名字；这里用自己拥有的文件名显式点名，
+# 保证纯 NVIDIA 模式一定有 DRM KMS。
+# intel 模式下本文件会被删除（那时 nvidia-drm 被 00-rakko-gpu-mode.conf 的 install 规则挡下）。
+nvidia-drm
+EOF
+}
+
+# ---------------------------------------------------------------- 模式探测
+# 读配置文件的标记行；没有新文件时看 005 的遗留文件是否存在（= intel/方案 A）。
+detect_configured_mode() {
+    if [ -r "$MODPROBE_FILE" ]; then
+        local m
+        m="$(sed -n "s/^${MODE_MARKER_PREFIX}[[:space:]]*//p" "$MODPROBE_FILE" | head -n1)"
+        case "$m" in
+            nvidia|intel) printf '%s\n' "$m"; return 0 ;;
+        esac
+        # 没有标记行（手工放的文件）：按内容猜
+        if grep -qE '^[[:space:]]*install[[:space:]]+i915[[:space:]]+/bin/true' "$MODPROBE_FILE"; then
+            printf 'nvidia\n'; return 0
+        fi
+        printf 'intel\n'; return 0
+    fi
+    if [ -r "$LEGACY_MODPROBE_FILE" ]; then
+        printf 'intel\n'   # 005 的遗留文件 = 方案 A
+        return 0
+    fi
+    printf 'unknown\n'
+}
+
+# 当前**运行中**的模式（看内核实际状态，不看配置文件）
+detect_running_mode() {
+    local lsmod_names i915_loaded nvidia_loaded drm_loaded
+    lsmod_names="$(lsmod | awk 'NR>1{print $1}')"
+    i915_loaded=0; nvidia_loaded=0; drm_loaded=0
+    grep -qx i915        <<<"$lsmod_names" && i915_loaded=1
+    grep -qx nvidia      <<<"$lsmod_names" && nvidia_loaded=1
+    grep -qx nvidia_drm  <<<"$lsmod_names" && drm_loaded=1
+    if [ "$i915_loaded" = 0 ] && [ "$drm_loaded" = 1 ]; then
+        printf 'nvidia\n'
+    elif [ "$i915_loaded" = 1 ] && [ "$drm_loaded" = 0 ]; then
+        printf 'intel\n'
+    else
+        printf 'mixed\n'
+    fi
+}
+
+# ---------------------------------------------------------------- status
+cmd_status() {
+    local cfg run legacy=""
+    cfg="$(detect_configured_mode)"
+    run="$(detect_running_mode)"
+
+    printf '配置模式 : %s\n' "$cfg"
+    if [ -r "$LEGACY_MODPROBE_FILE" ]; then
+        legacy="$LEGACY_MODPROBE_FILE（005 遗留，仍生效；下次切换时会被 $MODPROBE_FILE 取代）"
+    fi
+    printf '运行状态 : %s\n' "$run"
+    if [ "$cfg" = "$run" ]; then
+        printf '一致性   : %s配置与运行一致%s\n' "$C_GREEN" "$C_OFF"
+    else
+        printf '一致性   : %s配置与运行不一致 —— 需要重启才生效%s\n' "$C_YELLOW" "$C_OFF"
+    fi
+    [ -n "$legacy" ] && printf '遗留文件 : %s\n' "$legacy"
+
+    printf '\n-- 内核模块 --\n'
+    printf 'i915        : %s\n' "$(lsmod | awk '$1=="i915"{print "已加载"} END{print ""}' | head -n1)"
+    printf 'nvidia      : %s\n' "$(lsmod | awk '$1=="nvidia"{print "已加载"}' | head -n1)"
+    printf 'nvidia_uvm  : %s\n' "$(lsmod | awk '$1=="nvidia_uvm"{print "已加载"}' | head -n1)"
+    printf 'nvidia_drm  : %s\n' "$(lsmod | awk '$1=="nvidia_drm"{print "已加载"}' | head -n1)"
+    printf 'nvidia_modeset: %s\n' "$(lsmod | awk '$1=="nvidia_modeset"{print "已加载"}' | head -n1)"
+    printf 'nouveau     : %s\n' "$(lsmod | awk '$1=="nouveau"{print "已加载"}' | head -n1)"
+    if legacy_nvidia_module_present; then
+        printf '模块名打包  : %sDebian nvidia-current*（550 时代；本脚本会多写归一化模块名）%s\n' \
+            "$C_YELLOW" "$C_OFF"
+    else
+        printf '模块名打包  : NVIDIA 官方真名 nvidia / nvidia-modeset / nvidia-drm / nvidia-uvm\n'
+    fi
+    printf 'nvidia 版本 : %s\n' "$("$MODINFO_BIN" -F version nvidia 2>/dev/null || echo '（模块文件不在，未安装）')"
+
+    printf '\n-- DRM 设备 --\n'
+    local d
+    for d in /sys/class/drm/card[0-9]* /sys/class/drm/renderD[0-9]*; do
+        [ -e "$d/dev" ] || continue
+        printf '%-22s vendor=%s driver=%s\n' "/dev/dri/$(basename "$d")" \
+            "$(cat "$d/device/vendor" 2>/dev/null)" \
+            "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)" 2>/dev/null)"
+    done
+
+    printf '\n-- modprobe 规则（dry-run，不加载模块；多行用 " ; " 连接） --\n'
+    printf 'modprobe -n -v i915          : %s\n' "$(modprobe -n -v i915 2>&1 | paste -sd';' -)"
+    printf 'modprobe -n -v nvidia-drm    : %s\n' "$(modprobe -n -v nvidia-drm 2>&1 | paste -sd';' -)"
+    printf 'modprobe -n -v nvidia-modeset: %s\n' "$(modprobe -n -v nvidia-modeset 2>&1 | paste -sd';' -)"
+    printf 'modprobe -n -v nvidia-uvm    : %s\n' "$(modprobe -n -v nvidia-uvm 2>&1 | paste -sd';' -)"
+    printf 'modprobe -n -v nouveau       : %s\n' "$(modprobe -n -v nouveau 2>&1 | paste -sd';' -)"
+    printf '（模块已加载时 modprobe 直接 no-op、不打印 install 规则，属正常）\n'
+
+    printf '\n切换：sudo %s nvidia && sudo reboot\n' "$(basename "$0")"
+    printf '回退：sudo %s intel  && sudo reboot\n' "$(basename "$0")"
+}
+
+# ---------------------------------------------------------------- 切换
+write_file_or_dry() {
+    local path="$1" body="$2" dry="$3" dir tmp
+    if [ "$dry" = 1 ]; then
+        printf '  [dry-run] 写入 %s（%d 字节）\n' "$path" "${#body}"
+        return 0
+    fi
+    # 同目录 mktemp + mv：避免写到一半被 Ctrl-C/断电留下半截文件（008 的 P1）。
+    # 同目录保证 mv 是同一文件系统上的原子 rename，不会出现"文件短暂不存在"。
+    dir="$(dirname "$path")"
+    tmp="$(mktemp "$dir/.$(basename "$path").tmp.XXXXXX")" || die "在 $dir 创建临时文件失败"
+    if ! printf '%s\n' "$body" > "$tmp"; then
+        rm -f "$tmp"
+        die "写 $path 失败"
+    fi
+    chmod 0644 "$tmp" || { rm -f "$tmp"; die "设置 $path 权限失败"; }
+    mv -f "$tmp" "$path" || { rm -f "$tmp"; die "替换 $path 失败"; }
+    printf '  写入 %s\n' "$path"
+}
+
+remove_file_or_dry() {
+    local path="$1" dry="$2"
+    [ -e "$path" ] || return 0
+    if [ "$dry" = 1 ]; then
+        printf '  [dry-run] 删除 %s\n' "$path"
+        return 0
+    fi
+    rm -f "$path" || die "删除 $path 失败"
+    printf '  删除 %s\n' "$path"
+}
+
+# Debian 打包（550）在 /etc/modules-load.d/nvidia.conf 留了一个 alternatives 符号链接
+# （-> /etc/alternatives/glx--nvidia-load.conf -> /etc/nvidia/nvidia-load.conf）。
+# 换成 NVIDIA 官方 580 包之后这条链可能断掉，systemd-modules-load 会在开机时报
+# "Failed to read /etc/modules-load.d/nvidia.conf: No such file or directory"。
+# 只删**悬空**的符号链接；文件内容还在就绝不动它（哪怕它指向别处）。
+cleanup_stale_modulesload_link() {
+    local dry="$1" target
+    [ -L "$PACKAGING_MODULESLOAD_LINK" ] || return 0
+    [ -e "$PACKAGING_MODULESLOAD_LINK" ] && return 0
+    target="$(readlink "$PACKAGING_MODULESLOAD_LINK" 2>/dev/null || echo '?')"
+    if [ "$dry" = 1 ]; then
+        printf '  [dry-run] 删除悬空符号链接 %s（-> %s）\n' "$PACKAGING_MODULESLOAD_LINK" "$target"
+        return 0
+    fi
+    rm -f "$PACKAGING_MODULESLOAD_LINK" || die "删除 $PACKAGING_MODULESLOAD_LINK 失败"
+    printf '  删除悬空符号链接 %s（-> %s；nvidia-drm 由 %s 负责）\n' \
+        "$PACKAGING_MODULESLOAD_LINK" "$target" "$(basename "$MODULESLOAD_DRM")"
+}
+
+cmd_switch() {
+    local mode="$1" dry="${2:-0}"
+    local conf_body
+    conf_body="$(modprobe_conf_body "$mode")"
+    # 在文件头插入模式标记（status 靠它识别，避免每次去猜内容）
+    conf_body="$(printf '%s\n%s' "${MODE_MARKER_PREFIX} ${mode}" "$conf_body")"
+
+    printf '切换到 %s 模式%s\n' "$mode" "$([ "$dry" = 1 ] && printf '（dry-run，不落盘）')"
+
+    # 1) modprobe.d：新文件取代 005 的遗留文件。
+    #    两个文件在 nvidia 模式下语义相反（旧文件 install nvidia-drm /bin/true），所以
+    #    nvidia 模式必须**先删旧再写新**：中断在中间只会退回"两张卡都可用"，重跑即可自愈，
+    #    不会出现"i915 与新 nvidia-drm 同时被挡、两个 DRM 节点都没有"的死状态。
+    #    intel 模式相反，先写新文件（屏蔽立即生效）再删旧文件。
+    if [ "$mode" = nvidia ]; then
+        remove_file_or_dry "$LEGACY_MODPROBE_FILE" "$dry"
+        write_file_or_dry "$MODPROBE_FILE" "$conf_body" "$dry"
+    else
+        write_file_or_dry "$MODPROBE_FILE" "$conf_body" "$dry"
+        remove_file_or_dry "$LEGACY_MODPROBE_FILE" "$dry"
+    fi
+
+    # 2) modules-load.d
+    if [ "$mode" = nvidia ]; then
+        write_file_or_dry "$MODULESLOAD_DRM" "$(modulesload_drm_body)" "$dry"
+    else
+        remove_file_or_dry "$MODULESLOAD_DRM" "$dry"
+    fi
+    cleanup_stale_modulesload_link "$dry"
+    if [ ! -e "$MODULESLOAD_CUDA" ]; then
+        warn "$MODULESLOAD_CUDA 不存在！nvidia / nvidia-uvm 不会开机加载。"
+        warn "它由任务 005 创建，内容应为两行：nvidia 与 nvidia-uvm。"
+    fi
+
+    # 3) 重建 initramfs（把 modprobe.d 的变化带进早期阶段）
+    if [ "$dry" = 1 ]; then
+        printf '  [dry-run] update-initramfs -u\n'
+    else
+        printf '  执行 update-initramfs -u（把 modprobe.d 变化带进 initramfs）…\n'
+        update-initramfs -u || die "update-initramfs -u 失败；配置已写但 initramfs 未更新，请修好后重跑"
+        printf '  initramfs 已重建\n'
+    fi
+
+    printf '\n'
+    if [ "$dry" = 1 ]; then
+        printf 'dry-run 结束：没有改动任何文件。去掉 --dry-run 才会真正写入。\n'
+        return 0
+    fi
+    printf '%s配置已写入。必须重启才生效：%s\n' "$C_YELLOW" "$C_OFF"
+    printf '  sudo reboot\n'
+    printf '重启后验证：bash scripts/verify-nvenc.sh\n'
+    printf '回退：sudo %s %s && sudo reboot\n' "$(basename "$0")" "$([ "$mode" = nvidia ] && echo intel || echo nvidia)"
+}
+
+usage() {
+    cat <<EOF
+用法：
+  sudo $0 status              # 只读，默认动作
+  sudo $0 nvidia [--dry-run]  # 下次重启：纯 NVIDIA（i915 不加载，nvidia-drm modeset=1）
+  sudo $0 intel  [--dry-run]  # 下次重启：方案 A 回退（i915 正常，nvidia-drm 屏蔽）
+EOF
+}
+
+main() {
+    local action="${1:-status}" dry=0
+    [ "${2:-}" = "--dry-run" ] && dry=1
+    case "$action" in
+        status) require_root "$action"; cmd_status ;;
+        nvidia|intel) require_root "$action"; cmd_switch "$action" "$dry" ;;
+        -h|--help|help) usage ;;
+        *) usage; exit 2 ;;
+    esac
+}
+
+main "$@"

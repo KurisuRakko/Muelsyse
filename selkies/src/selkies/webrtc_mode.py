@@ -725,6 +725,8 @@ class WebRTCService(BaseStreamingService):
         installed = self.input_handler.installed_apps() if self.input_handler else None
         if installed is not None:
             payload["settings"]["apps_installed"] = {"value": installed}
+        native_touch = bool(self.input_handler and self.input_handler.native_touch_available())
+        payload["settings"]["native_touch"] = {"value": native_touch, "locked": True}
         return payload
 
     def handle_data_channel_open(self, channel: Optional[Any] = None) -> None:
@@ -1468,6 +1470,8 @@ class WebRTCService(BaseStreamingService):
             await self.input_handler.release_gamepads_for_conn(peer_id)
         except Exception as e:
             logger.warning(f"Gamepad release for departed peer {peer_id} failed: {e}")
+        if hasattr(self.input_handler, "release_touches"):
+            self.input_handler.release_touches(peer_id)
         if self.rtc_app is None or not self.rtc_app.peer_holds_input_authority(peer):
             return
         if (peer.get("display_id") or "primary") != "primary":

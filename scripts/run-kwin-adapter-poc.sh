@@ -8,7 +8,7 @@ fail() {
     exit 1
 }
 
-[[ "$(id -un)" == "rakko" ]] || fail "必须以 rakko 身份运行"
+(( EUID != 0 )) || fail "不要以 root 运行（POC 跑在调用者自己的 user manager 里）"
 [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" ]] || fail "XDG_RUNTIME_DIR 不可用"
 grep -qE '^VERSION_ID="?13([.]|"|$)' /etc/os-release || fail "当前主机不是 Debian 13"
 
@@ -42,7 +42,7 @@ mkdir -p "$CONFIG_HOME" "$DATA_HOME/applications" "$LOG_DIR"
 printf '%s\n' '[Plugins]' 'selkieskwinadapterEnabled=true' >"$CONFIG_HOME/kwinrc"
 install -m755 "$PROBE_BIN" "$POC_EXE"
 install -Dm644 "$ROOT/desktop/selkies-kwin-poc.desktop" "$DATA_HOME/applications/selkies-kwin-poc.desktop"
-sed -i "s#Exec=/home/rakko/.local/libexec/selkies-kwin-poc#Exec=$POC_EXE#" \
+sed -i "s#Exec=@HOME@/.local/libexec/selkies-kwin-poc#Exec=$POC_EXE#" \
     "$DATA_HOME/applications/selkies-kwin-poc.desktop"
 
 save_logs() {
@@ -76,8 +76,8 @@ kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
 
 systemd-run --user --unit="$UNIT" --collect \
     --setenv=HOME="$HOME" \
-    --setenv=USER=rakko \
-    --setenv=LOGNAME=rakko \
+    --setenv=USER="$(id -un)" \
+    --setenv=LOGNAME="$(id -un)" \
     --setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     --setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
     --setenv=XDG_CONFIG_HOME="$CONFIG_HOME" \

@@ -16,8 +16,8 @@
 use std::collections::HashMap;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use pyo3::{Py, PyAny, Python};
@@ -165,6 +165,10 @@ struct DcState {
     cancelled: bool,
     /// Mime -> bytes served by the write path's source.
     serve: Vec<(String, Vec<u8>)>,
+    /// Delivery ledger of a tracked write (see [`write_tracked`]).
+    tracker: Option<ServeTracker>,
+    /// Mimes whose sends the ledger does not count.
+    uncounted: Vec<String>,
     sync_done: bool,
 }
 
@@ -222,11 +226,23 @@ impl DcState {
             }
     }
 
+    /// Serve one paste request. The pipe is closed before a tracked write's
+    /// ledger counts the delivery, so a waiter woken by it may move the
+    /// selection on while the paster already holds the whole payload.
     fn on_send(&mut self, mime_type: &str, fd: std::os::fd::OwnedFd) {
+        let mut delivered = false;
         if let Some((_, data)) = self.serve.iter().find(|(m, _)| m == mime_type) {
-            let _ = write_fd_all(&fd, data, IO_TIMEOUT);
+            delivered = write_fd_all(&fd, data, IO_TIMEOUT).is_ok();
         }
-        // fd drops here, closing the pipe so the paster sees EOF.
+        drop(fd);
+        if delivered
+            && let Some(tracker) = &self.tracker
+            && !self.uncounted.iter().any(|m| m == mime_type)
+        {
+            let (ledger, cv) = &**tracker;
+            ledger.lock().unwrap().served += 1;
+            cv.notify_all();
+        }
     }
 }
 
@@ -457,6 +473,90 @@ pub(crate) fn read(socket_path: &str, mime: &str) -> Result<Option<Vec<u8>>, Str
 /// write is implicit: the compositor cancels the old source when the new one
 /// takes the selection.
 pub(crate) fn write(socket_path: &str, entries: Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    write_inner(socket_path, entries, None)
+}
+
+/// How many paste requests a tracked write's source has served in full, and
+/// whether its serve thread has ended (selection lost or compositor gone).
+#[derive(Default)]
+struct ServeLedger {
+    served: u64,
+    ended: bool,
+}
+
+type ServeTracker = Arc<(Mutex<ServeLedger>, Condvar)>;
+
+static NEXT_TRACK_TOKEN: AtomicU64 = AtomicU64::new(1);
+static TRACKED: Mutex<Option<HashMap<u64, ServeTracker>>> = Mutex::new(None);
+
+/// Ledgers kept at most; the oldest ended ones go first when a caller forgets
+/// [`release_tracked`].
+const MAX_TRACKED: usize = 64;
+
+/// [`write`], but the paste requests served from this selection are counted,
+/// so a caller that triggers a paste can wait for proof that the pasting app
+/// received the bytes ([`wait_served`]) instead of guessing with a sleep.
+/// Sends of the `uncounted` mimes (hints a clipboard manager reads to decide
+/// whether to record the selection) are served but not counted.
+/// Returns the ledger's token; pair every call with [`release_tracked`].
+pub(crate) fn write_tracked(
+    socket_path: &str,
+    entries: Vec<(String, Vec<u8>)>,
+    uncounted: Vec<String>,
+) -> Result<u64, String> {
+    let tracker: ServeTracker = Arc::new((Mutex::new(ServeLedger::default()), Condvar::new()));
+    let token = NEXT_TRACK_TOKEN.fetch_add(1, Ordering::Relaxed);
+    {
+        let mut reg = TRACKED.lock().unwrap();
+        let map = reg.get_or_insert_with(HashMap::new);
+        if map.len() >= MAX_TRACKED {
+            let mut stale: Vec<u64> = map
+                .iter()
+                .filter(|(_, t)| t.0.lock().unwrap().ended)
+                .map(|(k, _)| *k)
+                .collect();
+            stale.sort_unstable();
+            for k in stale.into_iter().take(map.len() + 1 - MAX_TRACKED) {
+                map.remove(&k);
+            }
+        }
+        map.insert(token, tracker.clone());
+    }
+    if let Err(e) = write_inner(socket_path, entries, Some((tracker, uncounted))) {
+        release_tracked(token);
+        return Err(e);
+    }
+    Ok(token)
+}
+
+/// Block up to `timeout` until the tracked write `token` has served more than
+/// `after` paste requests or its serve thread ended. Returns `(served, ended)`;
+/// an unknown token reads as `(0, true)`.
+pub(crate) fn wait_served(token: u64, after: u64, timeout: Duration) -> (u64, bool) {
+    let tracker = match TRACKED.lock().unwrap().as_ref().and_then(|m| m.get(&token).cloned()) {
+        Some(t) => t,
+        None => return (0, true),
+    };
+    let (ledger, cv) = &*tracker;
+    let guard = ledger.lock().unwrap();
+    let (guard, _) = cv
+        .wait_timeout_while(guard, timeout, |l| l.served <= after && !l.ended)
+        .unwrap();
+    (guard.served, guard.ended)
+}
+
+/// Forget a tracked write's ledger (the selection itself is unaffected).
+pub(crate) fn release_tracked(token: u64) {
+    if let Some(map) = TRACKED.lock().unwrap().as_mut() {
+        map.remove(&token);
+    }
+}
+
+fn write_inner(
+    socket_path: &str,
+    entries: Vec<(String, Vec<u8>)>,
+    tracking: Option<(ServeTracker, Vec<String>)>,
+) -> Result<(), String> {
     let stream =
         UnixStream::connect(socket_path).map_err(|e| format!("connect {socket_path}: {e}"))?;
     let conn = Connection::from_socket(stream).map_err(|e| format!("wayland setup: {e}"))?;
@@ -473,17 +573,27 @@ pub(crate) fn write(socket_path: &str, entries: Vec<(String, Vec<u8>)>) -> Resul
         source.offer(mime.clone());
     }
     state.serve = entries;
+    let tracker = tracking.map(|(tracker, uncounted)| {
+        state.uncounted = uncounted;
+        tracker
+    });
+    state.tracker = tracker.clone();
     device.set_selection(Some(&source));
     bounded_roundtrip(&conn, &mut queue, &mut state)?;
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("pf-dc-selection".into())
         .spawn(move || {
             if let Err(e) = serve_selection(conn, queue, state, device, source) {
                 eprintln!("[Clipboard] app-compositor selection serve ended: {e}");
             }
+            if let Some(tracker) = tracker {
+                let (ledger, cv) = &*tracker;
+                ledger.lock().unwrap().ended = true;
+                cv.notify_all();
+            }
         })
-        .map_err(|e| format!("spawn: {e}"))?;
-    Ok(())
+        .map_err(|e| format!("spawn: {e}"));
+    spawned.map(|_| ())
 }
 
 fn serve_selection(
@@ -604,4 +714,64 @@ fn watch_loop(socket_path: &str, callback: Py<PyAny>, stop: &AtomicBool) -> Resu
     device.destroy();
     let _ = queue.flush();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn register() -> (u64, ServeTracker) {
+        let tracker: ServeTracker = Arc::new((Mutex::new(ServeLedger::default()), Condvar::new()));
+        let token = NEXT_TRACK_TOKEN.fetch_add(1, Ordering::Relaxed);
+        TRACKED
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(token, tracker.clone());
+        (token, tracker)
+    }
+
+    fn bump(tracker: &ServeTracker, served: bool, ended: bool) {
+        let (ledger, cv) = &**tracker;
+        let mut l = ledger.lock().unwrap();
+        if served {
+            l.served += 1;
+        }
+        l.ended |= ended;
+        cv.notify_all();
+    }
+
+    #[test]
+    fn wait_served_times_out_without_a_paste() {
+        let (token, _t) = register();
+        let start = Instant::now();
+        assert_eq!(wait_served(token, 0, Duration::from_millis(60)), (0, false));
+        assert!(start.elapsed() >= Duration::from_millis(50));
+        release_tracked(token);
+    }
+
+    #[test]
+    fn wait_served_wakes_on_delivery_from_another_thread() {
+        let (token, t) = register();
+        let waker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            bump(&t, true, false);
+        });
+        let start = Instant::now();
+        assert_eq!(wait_served(token, 0, Duration::from_secs(5)), (1, false));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        waker.join().unwrap();
+        assert_eq!(wait_served(token, 1, Duration::from_millis(20)), (1, false));
+        release_tracked(token);
+    }
+
+    #[test]
+    fn wait_served_reports_a_lost_selection() {
+        let (token, t) = register();
+        bump(&t, false, true);
+        assert_eq!(wait_served(token, 0, Duration::from_secs(5)), (0, true));
+        release_tracked(token);
+        assert_eq!(wait_served(token, 0, Duration::from_millis(1)), (0, true));
+    }
 }

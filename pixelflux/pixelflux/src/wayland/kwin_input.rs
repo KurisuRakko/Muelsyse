@@ -37,6 +37,14 @@ impl KWinInputClipboardBridge {
         ficlient::keyboard_key(key, pressed)
     }
 
+    pub fn touch(events: &[ficlient::TouchEvent]) -> bool {
+        ficlient::touch(events)
+    }
+
+    pub fn touch_available() -> bool {
+        ficlient::touch_available()
+    }
+
     pub(crate) fn clipboard_types(display: &str) -> Result<Vec<String>, String> {
         dcclient::list_types(&socket_path(display).ok_or("XDG_RUNTIME_DIR 未设置")?)
     }

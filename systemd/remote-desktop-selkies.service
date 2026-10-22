@@ -1,6 +1,6 @@
 [Unit]
 Description=Selkies KWin Wayland host capture
-ConditionUser=rakko
+ConditionUser=@USER@
 # 预检未批准前没有这个标记，服务即使被误 enable 也不会启动。
 ConditionPathExists=%h/.config/selkies/remote-desktop.production-enabled
 Requires=remote-desktop-wayland.service
@@ -12,27 +12,39 @@ Type=simple
 WorkingDirectory=%h
 EnvironmentFile=-%h/.config/selkies/remote-desktop.env
 Environment=HOME=%h
-Environment=USER=rakko
-Environment=LOGNAME=rakko
-Environment=CUSTOM_USER=rakko
+Environment=USER=@USER@
+Environment=LOGNAME=@USER@
+Environment=CUSTOM_USER=@USER@
 Environment=XDG_RUNTIME_DIR=%t
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 Environment=XDG_CURRENT_DESKTOP=KDE
 Environment=XDG_SESSION_TYPE=wayland
 Environment=QT_QPA_PLATFORM=wayland
-Environment=PYTHONPATH=%h/.local/share/remote-desktop/selkies-kwin/site:/opt/selkies/lib/python3.13/site-packages
+Environment=PYTHONPATH=%h/.local/share/remote-desktop/selkies-kwin/site:@RAKKORD_SELKIES_VENV@/lib/python3.13/site-packages
 Environment=SELKIES_WEB_ROOT=%h/.local/share/remote-desktop/selkies-kwin/site/selkies_web
 Environment=WAYLAND_DISPLAY=wayland-remote-desktop
 Environment=PIXELFLUX_WAYLAND=true
 Environment=SELKIES_ADDR=127.0.0.1
-Environment=SELKIES_PORT=8090
+Environment=SELKIES_PORT=@RAKKORD_PORT@
 Environment=SELKIES_WAYLAND_HOST_DISPLAY=wayland-remote-desktop
 Environment=SELKIES_WAYLAND_HOST_BACKEND=kwin
 Environment=SELKIES_KWIN_ADAPTER_SOCKET=%t/selkies-kwin-adapter.sock
 Environment=PIXELFLUX_KWIN_STATS=1
-Environment=DRI_NODE=/dev/dri/renderD128
-Environment=DRINODE=/dev/dri/renderD128
-Environment=AUTO_GPU=intel
+# DRM render 节点不再写死。编号会在重启后漂移（2026-09-24 19:34 那次重启就把
+# renderD128/renderD129 在两块卡之间对调了，导致 Selkies 退回 Pixman、Sunshine
+# 找不到编码器），而且 Selkies 的 parse_dri_node_to_index() 只认
+# '/dev/dri/renderD<数字>' 字面量、pixelflux 也按 renderD{128+index} 读 sysfs，
+# 所以 by-path 符号链接不能直接交给它们 —— 必须在启动前解析成真实路径。
+# 任务 007 方案：**跟随 KWin 实际打开的 render 节点**（渲染卡 = 编码卡）：
+#   intel 模式（方案 A）-> KWin 在 Intel -> 同卡零拷贝 VAAPI；
+#   nvidia 模式（sudo rakko-gpu-mode nvidia）-> 只剩 P620 -> 同卡零拷贝 NVENC（EGLImage→CUDA）。
+# 不能跨卡：KWin 后端只收 DMA-BUF，跨卡时 pixelflux 每帧 RETAINED_GPU_FRAME 丢弃 →
+# 稳态黑屏。
+# 节点由 ExecStart 包装器在每次启动时探测（读 KWin 的 /proc/<pid>/fd，有限等待，
+# 见 scripts/selkies-dri-exec.sh），失败则回退到按 PCI 现场解析（防编号漂移）。
+# 见仓库 scripts/dri-node-resolve.sh、scripts/selkies-dri-exec.sh、drop-in dri-node.conf。
+# AUTO_GPU 保留：只在 DRINODE 为空时被 pixelflux 用来兜底；包装器会按实际卡同步它。
+Environment=AUTO_GPU=@RAKKORD_AUTO_GPU@
 Environment=SELKIES_ENCODER=h264enc
 Environment=SELKIES_FRAMERATE=60-60
 Environment=SELKIES_AUDIO_ENABLED=true

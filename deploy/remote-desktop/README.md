@@ -8,12 +8,12 @@
 - 官方镜像：`ghcr.io/selkies-project/selkies-egl-desktop:26.04`
 - 本机监听：`127.0.0.1:8090`
 - 容器端口：`8080`
-- 公网入口：`https://desktop.rakko.cn`
-- 传输：Selkies WebSocket，经 Cloudflare Tunnel 和 Phainon Gateway
+- 公网入口：`https://<your-domain>`
+- 传输：Selkies WebSocket，经 Cloudflare Tunnel 和前置的鉴权网关
 - GPU：主机 `/dev/dri` 的 Intel VAAPI
 - 桌面：容器自己的 Plasma/Wayland 会话
 
-公网入口的鉴权由 Phainon/Priestess 负责。Selkies Basic Auth 和容器 HTTPS 都关闭，避免出现第二套密码或内层自签名证书。
+公网入口的鉴权由前置网关（SSO / 反向代理）负责。Selkies Basic Auth 和容器 HTTPS 都关闭，避免出现第二套密码或内层自签名证书。
 
 ## 部署
 
@@ -24,10 +24,10 @@ export RENDER_GID="$(getent group render | cut -d: -f3)"
 export VIDEO_GID="$(getent group video | cut -d: -f3)"
 ```
 
-密码由 1Password CLI 注入，不把它写入仓库：
+密码从密钥管理器注入（例如 1Password CLI 的 `op read`），不把它写入仓库：
 
 ```bash
-export REMOTE_DESKTOP_PASSWD="$(op read 'op://<vault>/<item>/password')"
+export REMOTE_DESKTOP_PASSWD="<read it from your secret manager>"
 docker compose config >/tmp/rakko-remote-desktop.compose.yaml
 docker compose up -d
 ```
@@ -51,7 +51,7 @@ ss -ltnp | rg ':8090\\b'
 现有 Tunnel 增加一条 ingress，放在最终 `http_status:404` 之前：
 
 ```yaml
-- hostname: desktop.rakko.cn
+- hostname: <your-domain>
   service: http://127.0.0.1:8090
 ```
 

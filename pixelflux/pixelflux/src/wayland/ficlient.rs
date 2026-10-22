@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use wayland_client::backend::WaylandError;
 use wayland_client::protocol::wl_registry;
-use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, QueueHandle};
+use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols_plasma::fake_input::client::org_kde_kwin_fake_input::OrgKdeKwinFakeInput;
 
 use crate::wayland::wlclient::{bounded_roundtrip, impl_sync_callback, SyncState};
@@ -167,6 +167,37 @@ impl Device {
         self.device.keyboard_key(key, if pressed { 1 } else { 0 });
         self.flush()
     }
+
+    /// One client touch frame as a single non-blocking write: every contact
+    /// change in it, then `touch_frame`, so KWin sees the frame atomically.
+    fn touch(&mut self, events: &[TouchEvent]) -> Result<(), String> {
+        if self.device.version() < 2 {
+            return Err("fake-input below version 2 has no touch".to_string());
+        }
+        self.prepare()?;
+        for event in events {
+            match *event {
+                TouchEvent::Down { id, x, y } => self.device.touch_down(id, x, y),
+                TouchEvent::Motion { id, x, y } => self.device.touch_motion(id, x, y),
+                TouchEvent::Up { id } => self.device.touch_up(id),
+                TouchEvent::Cancel => self.device.touch_cancel(),
+            }
+        }
+        self.device.touch_frame();
+        self.flush()
+    }
+}
+
+/// One contact change of a touch frame, in KWin's global logical coordinates
+/// (the space `pointer_motion_absolute` takes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TouchEvent {
+    Down { id: u32, x: f64, y: f64 },
+    Motion { id: u32, x: f64, y: f64 },
+    Up { id: u32 },
+    /// Ends every contact; KWin forgets them all and tells clients to discard
+    /// the sequence.
+    Cancel,
 }
 
 #[derive(Default)]
@@ -256,12 +287,16 @@ fn spawn_connect(s: &mut Slot) {
 /// no device serves it — nothing armed, a compositor without the global, or KWin
 /// not reachable right now — in which case the caller's own seat carries the move.
 pub fn pointer_motion_rel(dx: f64, dy: f64) -> bool {
-    dispatch(|device| device.motion(dx, dy))
+    let delivered = dispatch(|device| device.motion(dx, dy));
+    crate::perf::pointer_fake_input(delivered);
+    delivered
 }
 
 /// Deliver an absolute pointer position through KWin's private input protocol.
 pub fn pointer_motion_abs(x: f64, y: f64) -> bool {
-    dispatch(|device| device.motion_absolute(x, y))
+    let delivered = dispatch(|device| device.motion_absolute(x, y));
+    crate::perf::pointer_fake_input(delivered);
+    delivered
 }
 
 /// Deliver a button transition through KWin's private input protocol.
@@ -285,6 +320,26 @@ pub fn pointer_axis(dx: f64, dy: f64) -> bool {
 /// Deliver one evdev keycode through KWin's private input protocol.
 pub fn keyboard_key(key: u32, pressed: bool) -> bool {
     dispatch(|device| device.keyboard_key(key, pressed))
+}
+
+/// Deliver one touch frame through KWin's private input protocol. KWin turns it
+/// into real touchscreen input: its decoration filter moves a window dragged by
+/// its server-side title bar, and everything else reaches clients as wl_touch.
+/// False when no device serves it; a contact the dropped connection held is
+/// cancelled by KWin itself when the device goes away.
+pub fn touch(events: &[TouchEvent]) -> bool {
+    if events.is_empty() {
+        return true;
+    }
+    dispatch(|device| device.touch(events))
+}
+
+/// Whether touch is not known to be undeliverable: the armed compositor has not
+/// answered without the global, nor bound it below the version that has touch.
+/// The connection is made in the background, so this holds before it is.
+pub fn touch_available() -> bool {
+    let s = lock_slot();
+    !s.absent && s.device.as_ref().is_none_or(|d| d.device.version() >= 2)
 }
 
 fn dispatch(operation: impl FnOnce(&mut Device) -> Result<(), String>) -> bool {

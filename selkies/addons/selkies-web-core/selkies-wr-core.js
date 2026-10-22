@@ -63,10 +63,11 @@
  * `gamepadControl`, `clipboardUpdateFromUI`, `clipboardImageUpdate`,
  * `audioDeviceSelected`, `requestFullscreen`, `setSynth`,
  * `showVirtualKeyboard`, `setAntiAliasing`, `setUseBrowserCursors`, `setRawPointerMotion`,
- * `touchinput:trackpad`, `touchinput:touch`, plus the `requestFileUpload` DOM
+ * `touchinput:trackpad`, `touchinput:touch`, `touchinput:options`, plus the `requestFileUpload` DOM
  * event. Window messages posted: `sidebarButtonStatusUpdate`,
  * `pipelineStatusUpdate`, `effectiveCursorState`, `scalingDpiFollowed`,
  * `serverSettings`, `clipboardContentUpdate`, `fileUpload` warnings, `trackpadModeUpdate`,
+ * `touchOptionsUpdate`,
  * `clientRoleUpdate`, `toggleDashboard`, `toggleTouchGamepad`. Flags read:
  * `window.__selkiesModeSwitching` (a mode switch in progress suppresses
  * alerts and recovery reloads), `window.__selkiesAuthProbe` (re-presents the
@@ -78,7 +79,8 @@ import { WebRTCClient } from "./lib/webrtc";
 import { WebRTCSignaling } from "./lib/signaling";
 import { Input } from "./lib/input";
 import { streamDensity as streamDensityOf, autoScalingDpi, publishedScale,
-         DEFAULT_DPI, DEFAULT_RENDER_SCALE, RENDER_SCALE_STOPS } from "./lib/stream-density.js";
+         DEFAULT_DPI, DEFAULT_RENDER_SCALE, RENDER_SCALE_STOPS,
+         DEFAULT_STREAM_PIXEL_BUDGET, budgetedScalingDpi } from "./lib/stream-density.js";
 import { createClipboardSync, createClipboardGestures, createDeferredClipboardWriter, createLocalClipboardSender, createMultipartClipboardState, createTaggedClipboardFetch, clipboardPreviewMessage, reencodeBlobAsPng, localClipboardBlocker, writeImageToLocalClipboard, digestedPayload } from "./lib/clipboard-sync.js";
 import { createFileUploader } from "./lib/file-upload.js";
 import { ClipboardWorkerBridge, sendClipboardChunked } from './lib/clipboard-worker-bridge.js'
@@ -385,6 +387,11 @@ export default function webrtc() {
 	/** Render and input preferences, persisted under the keys the WebSocket core uses too. */
 	let antiAliasingEnabled = true;
 	let trackpadMode = false;
+	/** Direct-touch options the dashboard sets, passed to `Input.setTouchOptions`. */
+	let touchOptions = { native: true, swipeScroll: true, longPressMs: 600, pinchZoom: true, inertia: true };
+	/** Whether the server delivers native touch (`native_touch` in `server_settings`). */
+	let serverNativeTouch = false;
+	const touchOptionsForDashboard = () => ({ ...touchOptions, nativeAvailable: serverNativeTouch });
 	/**
 	 * Cursor-rendering preference in force: seeded from localStorage at
 	 * connect, then updated by a dashboard pick (persisted) or a server-pushed
@@ -508,7 +515,24 @@ export default function webrtc() {
 	 */
 	function streamDensity() {
 		return streamDensityOf({ renderScale: renderScale / 100,
-		                         manual: window.manualResolution });
+		                         manual: window.manualResolution,
+		                         css: streamBoxCssSize(),
+		                         budget: streamPixelBudget });
+	}
+	/**
+	 * The server's framebuffer pixel budget (`stream_pixel_budget`), until the
+	 * server says otherwise; `streamDensity` lowers the render scale to fit it.
+	 */
+	let streamPixelBudget = DEFAULT_STREAM_PIXEL_BUDGET;
+	/**
+	 * The CSS size of the window the stream fills, which the density multiplies
+	 * into a framebuffer; null before the input layer exists.
+	 * @returns {(number[]|null)}
+	 */
+	function streamBoxCssSize() {
+		if (!input || typeof input.getWindowResolution !== 'function') return null;
+		const res = input.getWindowResolution();
+		return (res && res[0] > 0 && res[1] > 0) ? [res[0], res[1]] : null;
 	}
 	/** The density the last request was built on; a change re-requests on a secondary. */
 	let appliedStreamDensity = 0;
@@ -668,6 +692,18 @@ export default function webrtc() {
 	function applyMacCmdAsCtrl() {
 		if (input && typeof input.setMacCmdAsCtrl === 'function') {
 			input.setMacCmdAsCtrl(macCmdAsCtrl);
+		}
+	}
+	/**
+	 * Whether wheel input goes out as `ws` axis deltas: on only once the
+	 * server's settings payload offers `smooth_scroll` switched on, so a server
+	 * that predates the verb keeps the `m2` scroll clicks it understands.
+	 */
+	let smoothScroll = false;
+	/** Applies the smooth scroll setting to the input handler. */
+	function applySmoothScroll() {
+		if (input && typeof input.setSmoothScroll === 'function') {
+			input.setSmoothScroll(smoothScroll);
 		}
 	}
 
@@ -1079,9 +1115,9 @@ export default function webrtc() {
 			settingsToSend['manual_width'] = alignResolution(manualWidth);
 			settingsToSend['manual_height'] = alignResolution(manualHeight);
 		}
-		if (settingsToSend['scaling_dpi'] === undefined) {
-			settingsToSend['scaling_dpi'] = effectiveScalingDpi();
-		}
+		// A stored pick is the user's; what goes out is that pick after the pixel
+		// budget, the same value every later SETTINGS carries.
+		settingsToSend['scaling_dpi'] = effectiveScalingDpi();
 		settingsToSend['render_scale'] = renderScale;
 		if (detectedKeyboardLayout) {
 			settingsToSend['keyboardLayout'] = detectedKeyboardLayout;
@@ -1220,12 +1256,14 @@ export default function webrtc() {
 	/**
 	 * The DPI the desktop is asked for.
 	 *
-	 * 原样返回档位：服务端据此把合成器输出 scale 设为 `scalingDPI / 96`，那决定远端
-	 * 字体与图标的大小。这个数不参与 framebuffer 尺寸，没有什么可折算的。
+	 * 服务端据此把合成器输出 scale 设为 `scalingDPI / 96`，那决定远端字体与图标的大小。
+	 * 像素预算把渲染倍率降了档时，DPI 按同一比例降档（`budgetedScalingDpi`），逻辑桌面
+	 * 尺寸保持不变；没降档时原样返回用户选的档位。
 	 * @returns {number}
 	 */
 	function effectiveScalingDpi() {
-		return scalingDPI;
+		if (window.manualResolution) return scalingDPI;
+		return budgetedScalingDpi(scalingDPI, renderScale / 100, streamDensity());
 	}
 
 	/**
@@ -1812,6 +1850,18 @@ export default function webrtc() {
 						try { webrtc.sendDataChannelMessage('SET_NATIVE_CURSOR_RENDERING,1'); } catch (_) {}
 					}
 				}
+				break;
+			case 'touchinput:options':
+				if (message.options && typeof message.options === 'object') {
+					const o = message.options;
+					if (typeof o.native === 'boolean') { touchOptions.native = o.native; setBoolParam('touchNative', o.native); }
+					if (typeof o.swipeScroll === 'boolean') { touchOptions.swipeScroll = o.swipeScroll; setBoolParam('touchSwipeScroll', o.swipeScroll); }
+					if (typeof o.pinchZoom === 'boolean') { touchOptions.pinchZoom = o.pinchZoom; setBoolParam('touchPinchZoom', o.pinchZoom); }
+					if (typeof o.inertia === 'boolean') { touchOptions.inertia = o.inertia; setBoolParam('touchInertia', o.inertia); }
+					if (Number.isFinite(o.longPressMs)) { touchOptions.longPressMs = o.longPressMs; setIntParam('touchLongPressMs', o.longPressMs); }
+					if (input && typeof input.setTouchOptions === 'function') input.setTouchOptions(touchOptions);
+				}
+				window.postMessage({ type: 'touchOptionsUpdate', options: touchOptionsForDashboard() }, window.location.origin);
 				break;
 			case 'touchinput:touch':
 				if (input && typeof input.setTrackpadMode === 'function') {
@@ -2427,6 +2477,13 @@ export default function webrtc() {
 			crf = getIntParam('video_crf', crf);
 			antiAliasingEnabled = getBoolParam('antiAliasingEnabled', true);
 			trackpadMode = getBoolParam('trackpadMode', false);
+			touchOptions = {
+				native: getBoolParam('touchNative', true),
+				swipeScroll: getBoolParam('touchSwipeScroll', true),
+				longPressMs: getIntParam('touchLongPressMs', 600),
+				pinchZoom: getBoolParam('touchPinchZoom', true),
+				inertia: getBoolParam('touchInertia', true),
+			};
 			useBrowserCursors = getBoolParam('use_browser_cursors', true);
 			rawPointerMotion = getBoolParam('raw_pointer_motion', Input.rawPointerMotion);
 			force_aligned_resolution = getBoolParam('force_aligned_resolution', false);
@@ -2530,9 +2587,13 @@ export default function webrtc() {
 			window.webrtcInput = input;
 
 			if (trackpadMode) input.setTrackpadMode(true);
+			input.setTouchOptions(touchOptions);
+			input.setNativeTouchAvailable(serverNativeTouch);
+			window.postMessage({ type: 'touchOptionsUpdate', options: touchOptionsForDashboard() }, window.location.origin);
 			applyEffectiveCursorSetting();
 			applyRawPointerMotion();
 			applyMacCmdAsCtrl();
+			applySmoothScroll();
 			window.postMessage({ type: 'trackpadModeUpdate', enabled: trackpadMode }, window.location.origin);
 			window.postMessage({ type: 'clientRoleUpdate', role: clientRole }, window.location.origin);
 
@@ -2617,6 +2678,7 @@ export default function webrtc() {
 					requestWakeLock();
 					applyOutputDevice();
 				} else if (state === "failed" || state === "disconnected") {
+					if (input && typeof input.clearPendingScroll === 'function') input.clearPendingScroll();
 					if (!fatalConnectionHalt && pcRecoveryTimer === null) {
 						const graceMs = state === "failed" ? 1500 : 8000;
 						pcRecoveryTimer = setTimeout(() => {
@@ -2970,8 +3032,25 @@ export default function webrtc() {
 				}
 				console.log("Received server settings payload:", obj.settings);
 				const changes = sanitizeAndStoreSettings(obj.settings);
+				const budgetEntry = obj.settings.stream_pixel_budget;
+				if (budgetEntry && Number.isFinite(budgetEntry.value) && budgetEntry.value >= 0
+					&& budgetEntry.value !== streamPixelBudget) {
+					streamPixelBudget = budgetEntry.value;
+					console.log(`Stream pixel budget: ${streamPixelBudget || 'off'}.`);
+					if (!isSharedMode && !window.manualResolution) {
+						reapplyStreamDensity();
+						sendClientPersistedSettings();
+					}
+				}
 				const ce = obj.settings && obj.settings.command_enabled;
 				serverCommandEnabled = (ce && typeof ce.value === 'boolean') ? ce.value : true;
+				const nt = obj.settings && obj.settings.native_touch;
+				const nativeTouch = !!(nt && nt.value === true);
+				if (nativeTouch !== serverNativeTouch) {
+					serverNativeTouch = nativeTouch;
+					if (input && typeof input.setNativeTouchAvailable === 'function') input.setNativeTouchAvailable(serverNativeTouch);
+					window.postMessage({ type: 'touchOptionsUpdate', options: touchOptionsForDashboard() }, window.location.origin);
+				}
 				if (!startPolicyApplied) {
 					startPolicyApplied = true;
 					applyStartPolicy(obj.settings);
@@ -2996,6 +3075,10 @@ export default function webrtc() {
 					macCmdAsCtrl = cmdAsCtrl;
 					applyMacCmdAsCtrl();
 				}
+				const ss = obj.settings && obj.settings.smooth_scroll;
+				smoothScroll = !!ss && typeof ss.value === 'boolean'
+					&& (ss.locked ? ss.value : getBoolParam('smooth_scroll', ss.value));
+				applySmoothScroll();
 				// 锁定值必须直接同步到已经创建的输入层，不能只依赖 changes 回传。
 				const cursorSetting = obj.settings && obj.settings.use_browser_cursors;
 				if (cursorSetting && typeof cursorSetting.value === 'boolean') {

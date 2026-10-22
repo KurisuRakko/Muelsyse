@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Selkies 网页端优先：只要有浏览器客户端接入 Selkies，就结束正在进行的 Moonlight 串流。
+#
+# 为什么需要：两者共享同一个 KWin 会话，同时跑会抢 PipeWire 源和 UHD 630
+# （实测 Selkies 帧率被压到过 4.6fps），而且 Moonlight 会按自己的分辨率改 KWin 输出，
+# 网页端跟着一起变。与其互相干扰，不如让后到的网页端把 Moonlight 顶掉。
+#
+# 用 /api/apps/close 只结束串流会话，Sunshine 服务本身继续跑，客户端随时能再连。
+set -u
+
+CREDS=@HOME@/.config/sunshine/api-creds
+LOG=@HOME@/.config/sunshine/preempt.log
+
+kick() {
+    # 没有活跃会话就不用打扰（close 对空会话是无害的，但日志会干净些）。
+    grep -q 'CLIENT CONNECTED' @HOME@/.config/sunshine/sunshine.log 2>/dev/null || true
+    code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 \
+        -u "$(cat "$CREDS")" -X POST \
+        -H 'Origin: https://127.0.0.1:47990' \
+        https://127.0.0.1:47990/api/apps/close 2>/dev/null)
+    printf '%s selkies client connected -> close moonlight session (HTTP %s)\n' \
+        "$(date -Is)" "${code:-err}" >> "$LOG" 2>/dev/null || true
+}
+
+# -n 0 只看新行，不回放历史，避免启动时被旧日志触发。
+last_kick=0
+journalctl --user -u remote-desktop-selkies -f -n 0 --output=cat 2>/dev/null \
+| while IFS= read -r line; do
+    # 两个触发点都认：
+    #   Data WebSocket connected from — 任何客户端刚接入（最早）
+    #   Registering new client for display — 客户端发完初始设置、真的要画面了
+    # 真实浏览器两条都会打，去抖窗口保证只踢一次。
+    case "$line" in
+        *"Data WebSocket connected from"*|*"Registering new client for display"*)
+            now=$(date +%s)
+            if [ $(( now - last_kick )) -ge 5 ]; then
+                last_kick=$now
+                kick
+            fi
+            ;;
+    esac
+done

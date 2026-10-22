@@ -26,9 +26,25 @@ Components, all under this repository:
   `$SELKIES_KWIN_PREFIX` and the system one, and prepares KWin's own
   managed Xwayland listener (`scripts/selkies-xwayland-listen.py`) rather
   than reusing a stray `/tmp/.X11-unix` socket.
-- `scripts/install-production-host-wayland.sh` — installs the runtime
-  into a user's own directories without touching the distro's KWin,
-  Python, or `/opt/selkies`.
+- `scripts/build-kwin.sh` — builds `kwin/` + `kwin-adapter/` into a
+  timestamped release under the user's own directories (never the
+  distro's KWin), records a `BUILD-INFO`, and with `--activate` only
+  repoints the `current` symlink that the session runs from.
+- `scripts/build-release.sh` — the same for Selkies + pixelflux: web
+  client build, pixelflux release build, an immutable release directory
+  and an import check; `--activate` switches the `site` symlink, and
+  rolling back is pointing it at an older release.
+- `deploy/manifest.tsv` + `scripts/deploy-host.sh` — every file that is
+  installed on the host (units, drop-ins, libexec scripts, `.desktop`
+  files, `system/` root files, the Sunshine side path) is one manifest
+  row: repo path, target, mode, owner, kind, and what has to restart.
+  `deploy-host.sh` is read-only by default and prints what would change;
+  `--apply` installs and mirrors anything it overwrites into a
+  timestamped backup directory; root-owned rows need `--system`.
+  `scripts/check-drift.sh` compares the host against the same manifest
+  and `systemd/rakkord-drift-check.timer` runs it daily.
+- `scripts/bootstrap-host.sh` — one-time host setup (dedicated Selkies Python, KWin config,
+  cursor theme, browser launcher) that doesn't belong in the manifest.
 - `systemd/remote-desktop-wayland.service` +
   `systemd/remote-desktop-selkies.service` — the two long-running units;
   the Selkies unit `Requires=`/`BindsTo=` the Wayland one so they start
@@ -42,9 +58,13 @@ Components, all under this repository:
   basic-auth password if you choose to use one), everything
   resolution/backend/feature-related is pinned directly in the unit file
   so a stray environment file can't silently change it.
-- `desktop/*.desktop` — launcher entries used while bringing the capture
-  path up manually; see [`../known-limitations.md`](../known-limitations.md)
-  for the hardcoded path they and a couple of scripts still carry.
+- `desktop/*.desktop` — launcher entries. KWin only exposes privileged
+  protocols such as `org_kde_kwin_fake_input` to a client whose
+  executable matches a `.desktop` file's `Exec=`, so these files are part
+  of the permission model, not just menu entries.
+- `scripts/selkies-dri-exec.sh` — wraps the Selkies `ExecStart` and points
+  both rendering and encoding at the render node KWin actually opened
+  (Intel VAAPI or NVIDIA NVENC).
 
 Selkies ends up listening on `127.0.0.1` only (`SELKIES_ADDR`/`SELKIES_PORT`
 in the unit file); put your reverse proxy, tunnel, or SSH port-forward in
@@ -63,6 +83,17 @@ read-only check for an already-running production deployment (checks the
 services are active and Selkies is bound to loopback only). They're not
 needed to run RakkoRD; they're what was used to validate it during
 development.
+
+### Optional side paths
+
+- `scripts/rakkord-imecaret.py` + `systemd/rakkord-imecaret.service` —
+  reports the caret rectangle of the focused Qt app (over the fcitx
+  D-Bus portal) so the browser's IME candidate window can follow it.
+  Without it the client falls back to its own estimate.
+- `sunshine/` — Sunshine/Moonlight against the same KWin session. The
+  input bridge reads Sunshine's virtual evdev devices and replays them
+  through KWin's `fake_input`, because `kwin_wayland --virtual` opens no
+  input devices of its own.
 
 ## Option B — containerized (no host KWin patch)
 

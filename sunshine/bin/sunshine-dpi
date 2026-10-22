@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# 调 Moonlight 串流桌面的 DPI 缩放。数字越大，界面元素越大。
+# 2 = 界面按 1080p 尺寸渲染但画面按 4K 传输（Retina 做法，推荐）
+# 1.5 = 元素小一些、可用空间大一些 ; 3 = 元素更大
+set -u
+PREF=@HOME@/.config/sunshine/dpi-scale
+case "${1:-status}" in
+    status) echo "当前 DPI 缩放: $(cat "$PREF" 2>/dev/null || echo 2)" ;;
+    *)
+        if systemctl --user is-active --quiet remote-desktop-selkies.service; then
+            echo "Selkies 正在运行，改 scale 会让它 SIGABRT 崩溃循环（缓冲区按两个 scale 算）。" >&2
+            echo "先 sunshine-selkies stop 并停掉 Selkies，或只在 Moonlight 独占时调。" >&2
+            echo "偏好已记录为 $1，将在 Selkies 停止时生效。" >&2
+            echo "$1" > "$PREF"; exit 0
+        fi
+        echo "$1" > "$PREF"
+        WAYLAND_DISPLAY=wayland-remote-desktop XDG_RUNTIME_DIR=/run/user/@UID@ \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus \
+        /usr/bin/kscreen-doctor output.Virtual-0.scale."$1" >/dev/null 2>&1
+        echo "DPI 缩放已设为 $1（下次连接也保持）"
+        ;;
+esac

@@ -1,0 +1,12 @@
+# RakkoRD 管的 systemd unit 及应有的 enabled 状态；scripts/deploy-host.sh --apply 按此对齐。
+# 列（TAB 分隔）：unit	scope	enabled
+#   scope   = user（~/.config/systemd/user）| system（/etc/systemd/system，只在 --system 时处理）
+#   enabled = yes | no；只 enable/disable，不 --now，也不启停服务。
+# Sunshine 本体 app-dev.lizardbyte.app.Sunshine.service 是软件包自带的 unit，不在这里管。
+remote-desktop-wayland.service	user	yes
+remote-desktop-selkies.service	user	yes
+rakkord-imecaret.service	user	yes
+rakkord-sunshine-input.service	user	yes
+rakkord-moonlight-preempt.service	user	yes
+rakkord-drift-check.timer	user	yes
+socat-selkies.service	system	yes

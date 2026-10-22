@@ -1,0 +1,16 @@
+# 这是片段，不是完整的 nftables 配置。
+#
+# 来源：/etc/nftables.conf 第 27–33 行，位于 table inet filter 的 chain input 里
+# （该链 policy drop，上方已有 iifname "tailscale0" accept）。
+# 部署脚本不改 /etc/nftables.conf，只检查下面这条规则在不在（deploy/manifest.tsv 里 kind=check）；
+# 缺了要人工加回原位置，再 `sudo nft -c -f /etc/nftables.conf && sudo systemctl reload nftables`。
+# @RAKKORD_*@ 占位符在比较前按 ~/.config/rakkord/env 展开（见 config/rakkord.env.example）；
+# 手工补规则时写展开后的值，可用 scripts/check-drift.py --render 本文件 生成。
+#
+    # Selkies 远程桌面：socat 把 @RAKKORD_LAN_BIND@:@RAKKORD_PORT@ 转发到回环的 selkies（127.0.0.1:@RAKKORD_PORT@）。
+    # 原内网入口是 wechat-selkies 容器的 3000/3001，2026-09-16 随容器卸载一并删除；
+    # 这条是它的替代。Tailscale 侧由 `tailscale serve --http=@RAKKORD_PORT@` 提供，
+    # 上面的 iifname "tailscale0" accept 已覆盖，不需要额外规则。
+    # 注意：该桌面无认证（SELKIES_ENABLE_BASIC_AUTH=false|locked）且跑在 sudo 组用户下，
+    # 放行这条等于把整个 @RAKKORD_LAN_CIDR@ 当可信网段。
+    ip saddr @RAKKORD_LAN_CIDR@ tcp dport @RAKKORD_PORT@ accept

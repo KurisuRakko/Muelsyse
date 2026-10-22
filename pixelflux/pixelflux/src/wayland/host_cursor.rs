@@ -92,8 +92,8 @@ pub(crate) fn frame_content(flags: pw::spa::buffer::ChunkFlags) -> FrameContent 
 
 /// 把 metadata 事件去重成投递动作的纯状态机（可单测，无 IO）。
 ///
-/// `KWin` 只在形状变化时携带位图，其他帧只有 position/hotspot；因此这里缓存最近一次
-/// 下发过的位图，hotspot 变化时直接复用像素，不重新编码也不重新发送整张 PNG。
+/// `KWin` 只在形状变化时携带位图，其他帧只有 position/hotspot；没有位图的帧不下发，
+/// 客户端手上始终是同一帧里成对到达的位图与 hotspot，避免把旧图配上新形状的 hotspot。
 #[derive(Default)]
 pub(crate) struct DeliveryState {
     /// 最近一次观察到的可见性，`None` 表示还没观察过。
@@ -119,35 +119,23 @@ impl DeliveryState {
         }
         self.visible = Some(true);
 
-        let (hash, hotspot) = match meta.bitmap.as_ref() {
-            Some(bitmap) => (Some(bitmap_hash(bitmap)), meta.hotspot),
-            None => (None, meta.hotspot),
+        let Some(bitmap) = meta.bitmap.as_ref() else {
+            return Delivery::None;
         };
-        if let (Some(hash), Some((last_hash, _, last_x, last_y))) = (hash, self.last_sprite.as_ref())
+        let hash = bitmap_hash(bitmap);
+        let hotspot = meta.hotspot;
+        if let Some((last_hash, _, last_x, last_y)) = self.last_sprite.as_ref()
             && *last_hash == hash
             && (*last_x, *last_y) == hotspot
         {
             return Delivery::None;
         }
 
-        if let Some(bitmap) = meta.bitmap.as_ref() {
-            let hash = hash.expect("bitmap 存在时 hash 必然存在");
-            self.last_sprite = Some((hash, bitmap.clone(), hotspot.0, hotspot.1));
-            return Delivery::Sprite {
-                bitmap: bitmap.clone(),
-                hotspot,
-            };
+        self.last_sprite = Some((hash, bitmap.clone(), hotspot.0, hotspot.1));
+        Delivery::Sprite {
+            bitmap: bitmap.clone(),
+            hotspot,
         }
-
-        // 只有 hotspot 变化：复用上一张位图。
-        if let Some((hash, bitmap, last_x, last_y)) = self.last_sprite.clone()
-            && (last_x, last_y) != hotspot
-        {
-            self.last_sprite = Some((hash, bitmap.clone(), hotspot.0, hotspot.1));
-            return Delivery::Sprite { bitmap, hotspot };
-        }
-
-        Delivery::None
     }
 
     /// 最近一帧的 position（诊断用）。
@@ -428,17 +416,44 @@ mod tests {
     }
 
     #[test]
-    fn hotspot_change_reuses_last_bitmap() {
+    fn hotspot_change_without_bitmap_is_not_delivered() {
         let mut state = DeliveryState::default();
         let first = meta(7, (10, 10), (2, 2), Some(bitmap(16, 16, 0x20)));
         assert!(matches!(state.observe(&first), Delivery::Sprite { .. }));
-        match state.observe(&meta(7, (10, 10), (5, 6), None)) {
+        assert!(matches!(
+            state.observe(&meta(7, (10, 10), (5, 6), None)),
+            Delivery::None
+        ));
+        // last_sprite 仍记录原 hotspot，同图同 hotspot 再来仍去重。
+        assert!(matches!(state.observe(&first), Delivery::None));
+    }
+
+    #[test]
+    fn bitmap_and_hotspot_always_arrive_paired() {
+        let mut state = DeliveryState::default();
+        let a = bitmap(16, 16, 0xa0);
+        let b = bitmap(16, 16, 0xb0);
+        assert!(matches!(
+            state.observe(&meta(7, (0, 0), (4, 4), Some(a.clone()))),
+            Delivery::Sprite { .. }
+        ));
+        assert!(matches!(
+            state.observe(&meta(7, (0, 0), (16, 15), None)),
+            Delivery::None
+        ));
+        match state.observe(&meta(7, (0, 0), (16, 15), Some(b.clone()))) {
             Delivery::Sprite { bitmap, hotspot } => {
-                assert_eq!(hotspot, (5, 6));
-                assert_eq!(bitmap.width, 16);
-                assert_eq!(bitmap.bytes, first.bitmap.as_ref().unwrap().bytes);
+                assert_eq!(hotspot, (16, 15));
+                assert_eq!(bitmap.bytes, b.bytes);
             }
-            _ => panic!("hotspot 变化必须重新下发"),
+            _ => panic!("新位图必须下发"),
+        }
+        match state.observe(&meta(7, (0, 0), (4, 4), Some(a.clone()))) {
+            Delivery::Sprite { bitmap, hotspot } => {
+                assert_eq!(hotspot, (4, 4));
+                assert_eq!(bitmap.bytes, a.bytes);
+            }
+            _ => panic!("切回旧位图必须下发"),
         }
     }
 

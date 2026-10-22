@@ -1,0 +1,16 @@
+# Upstream trees vendored into this monorepo; keep them out of the GitHub
+# language statistics so those reflect the code written for this project.
+kwin/** linguist-vendored
+selkies/** linguist-vendored
+pixelflux/** linguist-vendored
+
+# Files inside the vendored trees that are original to this project.
+pixelflux/pixelflux/src/wayland/kwin*.rs -linguist-vendored
+pixelflux/pixelflux/src/wayland/host_cursor.rs -linguist-vendored
+pixelflux/pixelflux/src/perf.rs -linguist-vendored
+selkies/src/selkies/host_cursor.py -linguist-vendored
+selkies/src/selkies/adaptive_bitrate.py -linguist-vendored
+selkies/src/selkies/ime_caret.py -linguist-vendored
+selkies/addons/selkies-web-core/lib/input-geometry.js -linguist-vendored
+selkies/addons/selkies-web-core/lib/touch-feedback.js -linguist-vendored
+selkies/addons/selkies-web-core/lib/touch-gestures.js -linguist-vendored

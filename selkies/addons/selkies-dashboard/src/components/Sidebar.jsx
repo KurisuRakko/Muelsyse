@@ -25,14 +25,15 @@
  * `audioDeviceSelected` (its own selection mirrored back, so the dropdowns
  * show what the core was told), `gamepadButtonUpdate` and
  * `gamepadAxisUpdate`, `fileUpload` (upload progress and every notification
- * the core raises), and `trackpadModeUpdate`.
+ * the core raises), `trackpadModeUpdate` and `touchOptionsUpdate`.
  *
  * Messages it posts: `settings` (debounced), `pipelineControl`,
  * `gamepadControl`, `setManualResolution`, `resetResolutionToWindow`,
  * `setScaleLocally`, `setAntiAliasing`, `audioDeviceSelected`,
  * `clipboardUpdateFromUI`, `clipboardImageUpdate`, `requestFullscreen`,
  * `requestGamingMode`, `mode`, `setSynth`, `sidebarVisibilityChanged`, `TOUCH_GAMEPAD_SETUP`,
- * `TOUCH_GAMEPAD_VISIBILITY`, `touchinput:trackpad` and `touchinput:touch`,
+ * `TOUCH_GAMEPAD_VISIBILITY`, `touchinput:trackpad`, `touchinput:touch` and
+ * `touchinput:options` (with no options it asks for `touchOptionsUpdate`),
  * plus whatever channel a conditional-settings spec propagates through. The
  * soft keys dispatch synthetic `KeyboardEvent`s on `window`, and the files
  * section dispatches the `requestFileUpload` DOM event.
@@ -947,6 +948,11 @@ function Sidebar() {
   }, []);
   const isMobile = isMobileClient;
   const [isTrackpadModeActive, setIsTrackpadModeActive] = useState(false);
+  /** Direct-touch options as the core reports them (`touchOptionsUpdate`). */
+  const [touchOptions, setTouchOptions] = useState({
+    native: true, nativeAvailable: false,
+    swipeScroll: true, longPressMs: 600, pinchZoom: true, inertia: true,
+  });
   const [hasDetectedTouch, setHasDetectedTouch] = useState(false);
   const [heldKeys, setHeldKeys] = useState({
     Control: false,
@@ -2483,6 +2489,14 @@ function Sidebar() {
     window.postMessage({ type: message }, window.location.origin);
   }, [isTrackpadModeActive]);
 
+  /** Native touch is what direct touch does, and the emulated gestures' options do not apply. */
+  const nativeTouchActive = touchOptions.native && touchOptions.nativeAvailable;
+  /** Sends one direct-touch option to the core, which stores it and answers with `touchOptionsUpdate`. */
+  const setTouchOption = useCallback((key, value) => {
+    setTouchOptions((prev) => ({ ...prev, [key]: value }));
+    window.postMessage({ type: "touchinput:options", options: { [key]: value } }, window.location.origin);
+  }, []);
+
   /** Tooltip text for a stats gauge. */
   const getTooltipContent = useCallback(
     (itemKey) => {
@@ -2817,6 +2831,10 @@ function Sidebar() {
           if (typeof message.enabled === 'boolean') {
             setIsTrackpadModeActive(message.enabled);
           }
+        } else if (message.type === "touchOptionsUpdate") {
+          if (message.options && typeof message.options === 'object') {
+            setTouchOptions((prev) => ({ ...prev, ...message.options }));
+          }
         } else if (message.type === "scalingDpiFollowed") {
           // The core's derived pick; a stored pick is the user's and stays.
           if (Number.isFinite(message.value) && readStored("scaling_dpi") === null) {
@@ -2826,6 +2844,7 @@ function Sidebar() {
       }
     };
     window.addEventListener("message", handleWindowMessage);
+    window.postMessage({ type: "touchinput:options" }, window.location.origin);
     return () => {
       window.removeEventListener("message", handleWindowMessage);
       Object.values(notificationTimeouts.current).forEach((timers) => {
@@ -3658,6 +3677,87 @@ function Sidebar() {
                         >
                           <span className="toggle-button-sidebar-knob"></span>
                         </button>
+                      </div>
+                    )}
+                    {(isMobile || hasDetectedTouch) && touchOptions.nativeAvailable && (
+                      <div className="dev-setting-item toggle-item">
+                        <label htmlFor="touchNativeToggle">
+                          {t("sections.screen.touchNativeLabel", "Native touch")}
+                        </label>
+                        <button
+                          id="touchNativeToggle"
+                          className={`toggle-button-sidebar ${touchOptions.native ? "active" : ""}`}
+                          onClick={() => setTouchOption("native", !touchOptions.native)}
+                          aria-pressed={touchOptions.native}
+                          title={t("sections.screen.touchNativeTitle", "Send fingers to the remote desktop as a touchscreen, so apps scroll, zoom and drag windows themselves; turn off for apps that select text when dragged")}
+                        >
+                          <span className="toggle-button-sidebar-knob"></span>
+                        </button>
+                      </div>
+                    )}
+                    {(isMobile || hasDetectedTouch) && !nativeTouchActive && (
+                      <div className="dev-setting-item toggle-item">
+                        <label htmlFor="touchSwipeScrollToggle">
+                          {t("sections.screen.touchSwipeScrollLabel", "Swipe to scroll")}
+                        </label>
+                        <button
+                          id="touchSwipeScrollToggle"
+                          className={`toggle-button-sidebar ${touchOptions.swipeScroll ? "active" : ""}`}
+                          onClick={() => setTouchOption("swipeScroll", !touchOptions.swipeScroll)}
+                          aria-pressed={touchOptions.swipeScroll}
+                          title={t("sections.screen.touchSwipeScrollTitle", "One finger scrolls; double-tap and hold, or hold until the ring fills, then move, to drag")}
+                        >
+                          <span className="toggle-button-sidebar-knob"></span>
+                        </button>
+                      </div>
+                    )}
+                    {(isMobile || hasDetectedTouch) && !nativeTouchActive && (
+                      <div className="dev-setting-item toggle-item">
+                        <label htmlFor="touchInertiaToggle">
+                          {t("sections.screen.touchInertiaLabel", "Scroll inertia")}
+                        </label>
+                        <button
+                          id="touchInertiaToggle"
+                          className={`toggle-button-sidebar ${touchOptions.inertia ? "active" : ""}`}
+                          onClick={() => setTouchOption("inertia", !touchOptions.inertia)}
+                          aria-pressed={touchOptions.inertia}
+                          title={t("sections.screen.touchInertiaTitle", "Keep scrolling after a flick")}
+                        >
+                          <span className="toggle-button-sidebar-knob"></span>
+                        </button>
+                      </div>
+                    )}
+                    {(isMobile || hasDetectedTouch) && !nativeTouchActive && (
+                      <div className="dev-setting-item toggle-item">
+                        <label htmlFor="touchPinchZoomToggle">
+                          {t("sections.screen.touchPinchZoomLabel", "Pinch to zoom view")}
+                        </label>
+                        <button
+                          id="touchPinchZoomToggle"
+                          className={`toggle-button-sidebar ${touchOptions.pinchZoom ? "active" : ""}`}
+                          onClick={() => setTouchOption("pinchZoom", !touchOptions.pinchZoom)}
+                          aria-pressed={touchOptions.pinchZoom}
+                          title={t("sections.screen.touchPinchZoomTitle", "Pinch to zoom the local view of the stream; the remote desktop's size is unchanged")}
+                        >
+                          <span className="toggle-button-sidebar-knob"></span>
+                        </button>
+                      </div>
+                    )}
+                    {(isMobile || hasDetectedTouch) && !nativeTouchActive && (
+                      <div className="dev-setting-item">
+                        <label htmlFor="touchLongPressSelect">
+                          {t("sections.screen.touchLongPressLabel", "Long press for right-click")}
+                        </label>
+                        <select
+                          id="touchLongPressSelect"
+                          value={String(touchOptions.longPressMs)}
+                          onChange={(e) => setTouchOption("longPressMs", parseInt(e.target.value, 10))}
+                          title={t("sections.screen.touchLongPressTitle", "How long to hold before the ring fills and lifting right-clicks")}
+                        >
+                          {[400, 600, 800, 1000].map((ms) => (
+                            <option key={ms} value={String(ms)}>{`${ms} ms`}</option>
+                          ))}
+                        </select>
                       </div>
                     )}
                     {(renderableSettings.renderScale ?? true) && (

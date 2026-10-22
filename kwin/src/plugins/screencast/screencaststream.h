@@ -128,6 +128,11 @@ private:
         std::unique_ptr<GLTexture> texture;
         bool visible = false;
         bool invalid = true;
+        // 最近一次附位图时用的 hotspot（逻辑坐标，和位图同一个 PlatformCursorImage），
+        // 无图帧写它而不是实时值，保证 metadata 里 hotspot 和位图永远成对。
+        QPointF sentHotspot;
+        // 形状变化后还要连续附位图的帧数，防下游丢掉带图的那一帧。
+        int resendFrames = 0;
         QMetaObject::Connection changedConnection = QMetaObject::Connection();
         QMetaObject::Connection positionChangedConnection = QMetaObject::Connection();
     } m_cursor;

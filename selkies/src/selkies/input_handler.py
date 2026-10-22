@@ -36,6 +36,9 @@ rung rather than latching into a fallback:
 - Clipboard: native event-driven monitors (XFixes on X11, compositor
   callbacks / data-control on Wayland), with xclip polling as the X11
   fallback.
+- Touch: on the KWin host a client's `t` frames become touchscreen input
+  through `org_kde_kwin_fake_input` (`send_touch`), advertised to clients as
+  `native_touch`; everywhere else the client emulates touch with the pointer.
 
 Under a nested app compositor the seat rung only carries keysyms the base
 layout resolves, so the keyboard worker routes character-bearing keysyms the
@@ -50,7 +53,7 @@ client cannot inject input a controller did not grant: a read-only viewer
 peer (shared/#player co-op) may send only `VIEWER_ALLOWED_PREFIXES`; a viewer
 holding the active mk token while `enable_collab` is on (a read-write
 collaborator) may additionally send `VIEWER_COLLAB_EXTRA_PREFIXES` — the
-keyboard, mouse and clipboard set, including `co,` because IME commits and
+keyboard, mouse, touch and clipboard set, including `co,` because IME commits and
 atomic typing arrive that way. `cmd` and every settings-mutating message stay
 controller-only. Blur/visibility lifecycle noise (`VIEWER_SILENT_DROP_PREFIXES`)
 from a read-only viewer is normal operation and is dropped without a warning.
@@ -67,6 +70,7 @@ import fcntl
 from collections import deque
 import functools
 import logging
+import math
 import select
 import struct
 import threading
@@ -163,12 +167,61 @@ VIEWER_ALLOWED_PREFIXES = (
     "js,",
 )
 VIEWER_COLLAB_EXTRA_PREFIXES = (
-    "kd", "ku", "kh", "kr", "m", "m2",
+    "kd", "ku", "kh", "kr", "m", "m2", "ws,", "t,",
     "co,",
     "cws", "cbs", "cwd", "cbd", "cwe", "cbe", "cw", "cb", "cr",
     "REQUEST_CLIPBOARD",
 )
 VIEWER_SILENT_DROP_PREFIXES = ("kr", "cr")
+
+# Compositor scroll-axis units in one wheel notch, shared by the `m2` scroll
+# clicks and the `ws` deltas so both paths scroll the same distance.
+SCROLL_AXIS_UNITS_PER_NOTCH = 10.0
+# Bound on one `ws` delta: twenty notches, more than a client eases into a frame.
+SMOOTH_SCROLL_MAX_UNITS = 200.0
+
+# RAKKORD_PERF：逐秒计量开关（非空且不是 "0" 即开），默认关。selkies.py 的
+# RD_PERF_SRV 行读这里的输入窗口；关时热路径上只多一次 bool 判断。
+RAKKORD_PERF = os.environ.get("RAKKORD_PERF", "") not in ("", "0")
+# 相邻两条指针消息间隔超过这个值算一次新的拖动，不计入间隔分布：
+# 空闲几秒后的第一条消息会把 p95/max 拉成噪声。
+PERF_INPUT_GAP_CEILING_MS = 1000.0
+# 每秒窗口最多留这么多间隔样本，异常客户端刷屏时内存有界。
+PERF_INPUT_MAX_SAMPLES = 4096
+
+
+class PerfInputWindow:
+    """一秒窗口内 `m`/`m2` 指针消息的条数与相邻到达间隔，只在事件循环上读写。"""
+
+    __slots__ = ("count", "intervals_ms", "_last")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.intervals_ms: List[float] = []
+        self._last: Optional[float] = None
+
+    def note(self, now: Optional[float] = None) -> None:
+        """记一条指针消息的到达。"""
+        if now is None:
+            now = time.monotonic()
+        self.count += 1
+        last = self._last
+        self._last = now
+        if last is not None:
+            gap_ms = (now - last) * 1000.0
+            if (gap_ms <= PERF_INPUT_GAP_CEILING_MS
+                    and len(self.intervals_ms) < PERF_INPUT_MAX_SAMPLES):
+                self.intervals_ms.append(gap_ms)
+
+    def take(self) -> Tuple[int, List[float]]:
+        """取走本窗口的条数与间隔并清零；跨窗口的上一条到达时刻保留。"""
+        count, intervals = self.count, self.intervals_ms
+        self.count = 0
+        self.intervals_ms = []
+        return count, intervals
+
+
+PERF_INPUT = PerfInputWindow()
 
 
 def gamepad_slot_denied(msg: str, role: Optional[str], slot: Optional[int],
@@ -3546,10 +3599,14 @@ class WebRTCInput:
             injection via pixelflux, serialized so text commits keep their
             order; a compositor lacking the protocol is re-probed on a cooldown
             only, so per-keystroke fallbacks stay cheap.
-        _clipboard_inject_lock, _clipboard_inject_active: Clipboard-paste text
-            injection (the KWin route), serialized so one
-            save/write/paste/restore cycle finishes before the next, with a
-            reentrancy latch so the paste chord's own key path cannot recurse.
+        _clipboard_inject_lock, _clipboard_inject_active,
+        _clipboard_inject_owner: Clipboard-paste text injection (the KWin
+            route), serialized so one save/write/paste/restore cycle finishes
+            before the next; other callers wait their turn, and only the owning
+            task re-entering (the paste chord's own key path) is refused.
+        _clipboard_deferred_write: The newest clipboard write a client sent
+            while an injection held the selection, applied when it ends in
+            place of restoring the pre-injection content.
         _clipboard_self_write: Bytes this server last wrote to the session
             clipboard, pending the one selection-change edge that write
             raises. Spent there, so a later edge carrying them is a copy
@@ -3599,6 +3656,9 @@ class WebRTCInput:
         key_repeat_state: Keysym to the monotonic time of its next due repeat.
         keymap_watch_task: The session's MappingNotify consumer.
     """
+
+    MAX_TOUCH_CONTACTS = 20
+    MAX_TOUCH_EVENTS_PER_FRAME = 40
 
     def __init__(
         self,
@@ -3697,6 +3757,7 @@ class WebRTCInput:
         self.mouse = None
         self.xdisplay = None
         self.button_mask = 0
+        self._smooth_scroll_carry = (0.0, 0.0)
         self.last_x = -1
         self.last_y = -1
         self.tracked_position_stale = False
@@ -3748,6 +3809,9 @@ class WebRTCInput:
         self._wl_typer_retry_at = 0.0
         self._clipboard_inject_lock = asyncio.Lock()
         self._clipboard_inject_active = False
+        self._clipboard_inject_owner = None
+        self._clipboard_deferred_write = None
+        self._clipboard_inject_snapshot = (None, None)
         self._clipboard_last_bytes = None
         self._clipboard_self_write = None
         self._x11_clipboard_monitor = None
@@ -3773,6 +3837,8 @@ class WebRTCInput:
         self.pressed_keys = {}
         self.reaped_atomic_keys = set()
         self.max_pressed_keys = 1024
+        self._touch_contacts = {}
+        self._touch_next_id = 0
         self.key_stale_window = 2.0
         self.key_sweep_interval = 0.1
         self.key_sweep_task = None
@@ -4573,6 +4639,112 @@ class WebRTCInput:
         except Exception as e:
             logger_webrtc_input.warning(f"Failed to release held mouse buttons: {e}")
 
+    def native_touch_available(self) -> bool:
+        """Whether a client's touches can reach the desktop as a touchscreen.
+
+        Only the KWin host takes them, through `org_kde_kwin_fake_input`;
+        everywhere else the client keeps emulating touch with the pointer.
+        """
+        if not (self.is_wayland and self.wayland_input
+                and getattr(self, "_external_wayland_host", False)
+                and getattr(self, "_wayland_host_backend", None) == "kwin"):
+            return False
+        probe = getattr(self.wayland_input, "native_touch_available", None)
+        if probe is None or not hasattr(self.wayland_input, "inject_touch"):
+            return False
+        try:
+            return bool(probe())
+        except Exception:
+            return False
+
+    def send_touch(self, fields: List[str], display_id: str = 'primary',
+                   conn_id: Any = None) -> None:
+        """Deliver one client touch frame (`t,kind,id,x,y[,kind,id,x,y...]`).
+
+        `kind` is `d`, `m`, `u` or `c`; x/y are framebuffer pixels of the
+        delivering display, offset into the combined layout and converted to
+        the compositor's logical space exactly as absolute pointer motion is.
+        Client contact ids are mapped to ids unique across connections, since
+        the compositor ignores a down on an id it still holds. A malformed
+        frame is dropped whole.
+        """
+        if not self.native_touch_available():
+            return
+        if not fields or len(fields) % 4 or len(fields) > 4 * self.MAX_TOUCH_EVENTS_PER_FRAME:
+            return
+        offset_x = offset_y = 0
+        server = self.data_server_instance
+        if server is not None and hasattr(server, 'display_layouts'):
+            lookup_id = display_id or 'primary'
+            layout = server.display_layouts.get(lookup_id)
+            if layout:
+                offset_x = layout.get('x', 0)
+                offset_y = layout.get('y', 0)
+            elif lookup_id != 'primary':
+                return
+        scale = self._injection_logical_scale(display_id)
+        held = self._touch_contacts
+        frame = []
+        for i in range(0, len(fields), 4):
+            kind = fields[i]
+            if kind not in ("d", "m", "u", "c"):
+                return
+            client_id = int(fields[i + 1])
+            x = float(fields[i + 2])
+            y = float(fields[i + 3])
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return
+            lx = (min(max(x, 0.0), 65535.0) + offset_x) / scale
+            ly = (min(max(y, 0.0), 65535.0) + offset_y) / scale
+            key = (conn_id, client_id)
+            if kind == "c":
+                frame.extend(self._end_touches_of(conn_id))
+                break
+            elif kind == "d":
+                if key in held or len(held) >= self.MAX_TOUCH_CONTACTS:
+                    continue
+                self._touch_next_id = (self._touch_next_id % 0x7FFFFFFF) + 1
+                held[key] = self._touch_next_id
+                frame.append(("d", held[key], lx, ly))
+            elif key in held:
+                if kind == "m":
+                    frame.append(("m", held[key], lx, ly))
+                else:
+                    frame.append(("u", held.pop(key), 0.0, 0.0))
+        if frame and not self.wayland_input.inject_touch(frame):
+            held.clear()
+
+    def _end_touches_of(self, conn_id: Any) -> List[Tuple[str, int, float, float]]:
+        """Forget one connection's contacts and return the events that end them.
+
+        A cancel ends every contact on the desktop, so it is used only when no
+        other connection holds one; otherwise the contacts are lifted, leaving
+        a collaborator's touch alone.
+        """
+        held = self._touch_contacts
+        mine = [key for key in held if key[0] == conn_id]
+        if not mine:
+            return []
+        ids = [held.pop(key) for key in mine]
+        if not held:
+            return [("c", 0, 0.0, 0.0)]
+        return [("u", touch_id, 0.0, 0.0) for touch_id in ids]
+
+    def release_touches(self, conn_id: Any) -> None:
+        """End the contacts a departing connection still holds, so a client that
+        vanished mid-touch leaves no finger down (a held title-bar drag, say).
+        Called for every departure, whatever input authority it held: contacts
+        belong to the connection that made them."""
+        if not getattr(self, "_touch_contacts", None):
+            return
+        frame = self._end_touches_of(conn_id)
+        if not frame:
+            return
+        try:
+            self.wayland_input.inject_touch(frame)
+        except Exception as e:
+            logger_webrtc_input.warning(f"Failed to end held touches: {e}")
+
     def send_mouse(self, action: int, data: Any) -> None:
         """Route one MOUSE_* action to the uinput socket or XTEST backend.
 
@@ -5025,6 +5197,20 @@ class WebRTCInput:
                     self._invalidate_app_wl_display()
                 raise
 
+    #: How long a paste may take to reach the focused app before the text is
+    #: reported undelivered and left on the clipboard.
+    _PASTE_DELIVERY_TIMEOUT_MS = 1500
+    #: Quiet period after a delivery during which further fetches of the same
+    #: paste (an app reading several text targets) are still served.
+    _PASTE_SETTLE_MS = 120
+    #: Quiet period before the paste chord, also the focused app's margin to
+    #: receive the new offer; fetches inside it are not the paste's.
+    _PASTE_PRESETTLE_MS = 30
+    #: Mime a KDE clipboard manager reads to skip recording a selection, so
+    #: typed text stays out of the clipboard history and its read is not
+    #: mistaken for the paste.
+    _PASSWORD_HINT_MIME = "x-kde-passwordManagerHint"
+
     async def _inject_text_via_clipboard(self, text: str) -> bool:
         """Type `text` by replacing the clipboard with it, pasting via
         Shift+Insert, and restoring what was copied before. The route for
@@ -5033,41 +5219,159 @@ class WebRTCInput:
         data-control clipboard and ordinary key events. Held modifiers are
         lifted around the chord so they cannot corrupt the paste, and
         write_clipboard's baseline keeps the monitor from echoing the injected
-        text back to clients. Returns True once the paste chord is sent."""
-        if self._clipboard_inject_active:
+        text back to clients.
+
+        Where pixelflux counts the paste requests its selection serves, the
+        previous content comes back only after the focused app has received
+        the text, never on a timer. A paste nobody fetches leaves the text on
+        the clipboard (so it is not lost) and returns False. Client clipboard
+        writes arriving meanwhile are held and applied at the end, in place of
+        the restore. Concurrent callers queue behind the running injection.
+        """
+        if self._clipboard_inject_owner is asyncio.current_task():
+            logger_webrtc_input.error("Clipboard text injection re-entered from its own key path")
             return False
         async with self._clipboard_inject_lock:
             self._clipboard_inject_active = True
+            self._clipboard_inject_owner = asyncio.current_task()
             shift_keysym = 0xFFE1
             insert_keysym = 0xFF63
             held_modifiers = list(self.active_modifiers)
+            old_data = old_mime = None
+            restore = False
+            undelivered = False
             try:
                 for mod_keysym in held_modifiers:
                     await self.send_x11_keypress(mod_keysym, down=False)
                 old_data, old_mime = await self.read_clipboard(use_binary=True)
-                if not await self.write_clipboard(text):
+                self._clipboard_inject_snapshot = (old_data, old_mime)
+                token = await self._write_clipboard_tracked(text)
+                if token is None and not await self.write_clipboard(text):
                     return False
-                # The sleeps are the focused app's margins to receive the new
-                # offer and to finish fetching it before the selection is restored.
-                await asyncio.sleep(0.02)
-                await self.send_x11_keypress(shift_keysym, down=True)
-                await self.send_x11_keypress(insert_keysym, down=True, neutralize=False)
-                await self.send_x11_keypress(insert_keysym, down=False)
-                await self.send_x11_keypress(shift_keysym, down=False)
-                await asyncio.sleep(0.05)
-                if old_data is not None:
-                    await self.write_clipboard(old_data, old_mime or "text/plain")
-                elif self.is_wayland:
-                    await self._clear_injected_clipboard()
-                return True
+                baseline = 0
+                try:
+                    if token is None:
+                        # The focused app's margin to receive the new offer.
+                        await asyncio.sleep(0.02)
+                    else:
+                        baseline = await self._settle_paste_baseline(token)
+                    await self.send_x11_keypress(shift_keysym, down=True)
+                    await self.send_x11_keypress(insert_keysym, down=True, neutralize=False)
+                    await self.send_x11_keypress(insert_keysym, down=False)
+                    await self.send_x11_keypress(shift_keysym, down=False)
+                    if token is None:
+                        # Untracked: a margin for the app to finish fetching.
+                        await asyncio.sleep(0.05)
+                        restore = True
+                        return True
+                    delivered, restore = await self._await_paste_delivery(token, baseline)
+                finally:
+                    if token is not None:
+                        self.wayland_input.clipboard_release_tracked_app(token)
+                if not delivered:
+                    undelivered = True
+                    logger_webrtc_input.warning(
+                        f"Pasted text ({len(text)} chars) was not fetched within "
+                        f"{self._PASTE_DELIVERY_TIMEOUT_MS} ms; left on the session clipboard.")
+                return delivered
             except Exception as e:
                 logger_webrtc_input.error(f"Clipboard text injection failed: {e}")
                 return False
             finally:
-                for mod_keysym in held_modifiers:
-                    if mod_keysym in self.active_modifiers:
-                        await self.send_x11_keypress(mod_keysym, down=True)
-                self._clipboard_inject_active = False
+                try:
+                    try:
+                        deferred, self._clipboard_deferred_write = self._clipboard_deferred_write, None
+                        if undelivered:
+                            if deferred is not None:
+                                logger_webrtc_input.warning(
+                                    "Client clipboard write held during an undelivered paste was "
+                                    "discarded to keep the undelivered text on the clipboard.")
+                        elif deferred is not None:
+                            await asyncio.wait_for(self.write_clipboard(*deferred), 3.0)
+                        elif restore:
+                            if old_data is not None:
+                                await asyncio.wait_for(
+                                    self.write_clipboard(old_data, old_mime or "text/plain"), 3.0)
+                            elif self.is_wayland:
+                                await asyncio.wait_for(self._clear_injected_clipboard(), 3.0)
+                        while not undelivered and self._clipboard_deferred_write is not None:
+                            deferred, self._clipboard_deferred_write = self._clipboard_deferred_write, None
+                            await asyncio.wait_for(self.write_clipboard(*deferred), 3.0)
+                    except Exception as e:
+                        logger_webrtc_input.error(
+                            f"Clipboard restore after text injection failed: {e!r}")
+                    for mod_keysym in held_modifiers:
+                        if mod_keysym in self.active_modifiers:
+                            await self.send_x11_keypress(mod_keysym, down=True)
+                finally:
+                    late, self._clipboard_deferred_write = self._clipboard_deferred_write, None
+                    self._clipboard_inject_owner = None
+                    self._clipboard_inject_active = False
+                    self._clipboard_inject_snapshot = (None, None)
+                    if late is not None and not undelivered:
+                        self._spawn_task(self.write_clipboard(*late))
+
+    async def _write_clipboard_tracked(self, text: str) -> Optional[int]:
+        """Take the app compositor's selection with `text` while counting the
+        paste requests it serves. Returns the ledger token, or None where no
+        count is available (no separate app compositor, an older pixelflux, or
+        the tracked write failing), leaving the caller to the untracked write."""
+        wi = self.wayland_input
+        if not (self.is_wayland and wi is not None
+                and hasattr(wi, 'clipboard_write_app_tracked')
+                and self._has_separate_app_compositor()):
+            return None
+        input_bytes = text.encode('utf-8')
+        entries = [(m, input_bytes) for m in (
+            "text/plain;charset=utf-8", "text/plain",
+            "UTF8_STRING", "STRING", "TEXT")]
+        entries.append((self._PASSWORD_HINT_MIME, b"secret"))
+        self._clipboard_last_bytes = input_bytes
+        self._clipboard_self_write = input_bytes
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, wi.clipboard_write_app_tracked, self._app_wayland_display(), entries,
+                [self._PASSWORD_HINT_MIME])
+        except Exception as e:
+            logger_webrtc_input.warning(f"tracked data-control clipboard write failed: {e}")
+            self._invalidate_app_wl_display_if_dead(self._app_wayland_display())
+            return None
+
+    async def _settle_paste_baseline(self, token: int) -> int:
+        """Let fetches that are not the paste (a clipboard manager or monitor
+        reacting to the new selection) finish before the chord, and return how
+        many there were, so only fetches beyond them count as the paste."""
+        loop = asyncio.get_running_loop()
+        wait = self.wayland_input.clipboard_wait_served_app
+        baseline = 0
+        for _ in range(10):
+            served, ended = await loop.run_in_executor(
+                None, wait, token, baseline, self._PASTE_PRESETTLE_MS)
+            if ended or served == baseline:
+                break
+            baseline = served
+        return baseline
+
+    async def _await_paste_delivery(self, token: int, baseline: int = 0) -> Tuple[bool, bool]:
+        """Wait for the tracked selection `token` to be fetched by the paste,
+        beyond the `baseline` fetches seen before the chord.
+        Returns (delivered, restorable): delivered once a paste request was
+        served in full, after further fetches have gone quiet; restorable while
+        the selection is still ours, so moving it on cannot pull it from under
+        a paste that another client's copy already replaced."""
+        loop = asyncio.get_running_loop()
+        wait = self.wayland_input.clipboard_wait_served_app
+        served, ended = await loop.run_in_executor(
+            None, wait, token, baseline, self._PASTE_DELIVERY_TIMEOUT_MS)
+        if served <= baseline:
+            return False, False
+        while not ended:
+            more, ended = await loop.run_in_executor(
+                None, wait, token, served, self._PASTE_SETTLE_MS)
+            if more == served:
+                break
+            served = more
+        return True, not ended
 
     async def _clear_injected_clipboard(self) -> None:
         """Drop the selection the injection left behind when there was nothing
@@ -5179,6 +5483,52 @@ class WebRTCInput:
                         pass
         except (FileNotFoundError, asyncio.TimeoutError, Exception):
             pass
+
+    def send_smooth_scroll(self, dx: float, dy: float) -> None:
+        """Apply one `ws` scroll delta, in compositor axis units.
+
+        The units and signs are those `send_x11_mouse` hands
+        `inject_mouse_scroll` for a scroll click: one notch is
+        `SCROLL_AXIS_UNITS_PER_NOTCH`, positive `dy` is the click of bit 3 and
+        negative the click of bit 4, positive `dx` bit 7 and negative bit 6. So
+        a client switching between `ws` and `m2` scrolls the same way.
+
+        On Wayland the delta goes to the compositor as is, fraction included.
+        X11 and uinput take only whole clicks, so there the delta is carried
+        per axis and drained as the clicks `send_x11_mouse` would have sent; a
+        reversal drops the carry so a remainder cannot swallow the first click
+        the other way.
+
+        Args:
+            dx: Horizontal delta; values outside `SMOOTH_SCROLL_MAX_UNITS` are
+                clamped to it.
+            dy: Vertical delta, clamped likewise.
+        """
+        if not (math.isfinite(dx) and math.isfinite(dy)):
+            return
+        dx = max(-SMOOTH_SCROLL_MAX_UNITS, min(SMOOTH_SCROLL_MAX_UNITS, dx))
+        dy = max(-SMOOTH_SCROLL_MAX_UNITS, min(SMOOTH_SCROLL_MAX_UNITS, dy))
+        if dx == 0.0 and dy == 0.0:
+            return
+        if self.wayland_input:
+            self.wayland_input.inject_mouse_scroll(dx, dy)
+            return
+        carry_x, carry_y = self._smooth_scroll_carry
+        carry_x = dx if carry_x * dx < 0 else carry_x + dx
+        carry_y = dy if carry_y * dy < 0 else carry_y + dy
+        sent = False
+        for carry, positive, negative in (
+                (carry_y, MOUSE_SCROLL_UP, MOUSE_SCROLL_DOWN),
+                (carry_x, MOUSE_SCROLL_RIGHT, MOUSE_SCROLL_LEFT)):
+            clicks = int(abs(carry) // SCROLL_AXIS_UNITS_PER_NOTCH)
+            for _ in range(clicks):
+                self.send_mouse(positive if carry > 0 else negative, None)
+            sent = sent or clicks > 0
+        carry_x = math.fmod(carry_x, SCROLL_AXIS_UNITS_PER_NOTCH)
+        carry_y = math.fmod(carry_y, SCROLL_AXIS_UNITS_PER_NOTCH)
+        self._smooth_scroll_carry = (carry_x, carry_y)
+        if sent and self.xdisplay:
+            self.xdisplay.flush()
 
     async def send_x11_mouse(self, x: int, y: int, button_mask: int,
                              scroll_magnitude: int, relative: bool = False,
@@ -5301,7 +5651,7 @@ class WebRTCInput:
                         elif bit_index == 3:
                             if scroll_magnitude > 0:
                                 if is_pressed_now:
-                                    self.wayland_input.inject_mouse_scroll(0.0, 10.0 * mag)
+                                    self.wayland_input.inject_mouse_scroll(0.0, SCROLL_AXIS_UNITS_PER_NOTCH * mag)
                             else:
                                 if is_pressed_now:
                                     # Queued behind pending keys like any key event:
@@ -5313,7 +5663,7 @@ class WebRTCInput:
                         elif bit_index == 4:
                             if scroll_magnitude > 0:
                                 if is_pressed_now:
-                                    self.wayland_input.inject_mouse_scroll(0.0, -10.0 * mag)
+                                    self.wayland_input.inject_mouse_scroll(0.0, -SCROLL_AXIS_UNITS_PER_NOTCH * mag)
                             else:
                                 if is_pressed_now:
                                     self._keyboard_enqueue_chord((
@@ -5322,10 +5672,10 @@ class WebRTCInput:
 
                         elif bit_index == 6:
                             if scroll_magnitude > 0 and is_pressed_now:
-                                self.wayland_input.inject_mouse_scroll(-10.0 * mag, 0.0)
+                                self.wayland_input.inject_mouse_scroll(-SCROLL_AXIS_UNITS_PER_NOTCH * mag, 0.0)
                         elif bit_index == 7:
                             if scroll_magnitude > 0 and is_pressed_now:
-                                self.wayland_input.inject_mouse_scroll(10.0 * mag, 0.0)
+                                self.wayland_input.inject_mouse_scroll(SCROLL_AXIS_UNITS_PER_NOTCH * mag, 0.0)
 
             self.button_mask = button_mask
             return
@@ -6518,6 +6868,15 @@ class WebRTCInput:
             (data, mime): text as str with mime 'text/plain', images as bytes
             with their mime, or (None, None) when nothing is readable.
         """
+        if (self._clipboard_inject_active
+                and self._clipboard_inject_owner is not asyncio.current_task()):
+            # The selection holds the text being typed, and a fetch of it would
+            # count as the paste: answer with what the injection will leave.
+            if self._clipboard_deferred_write is not None:
+                data, mime = self._clipboard_deferred_write
+                return data, mime
+            return self._clipboard_inject_snapshot
+
         if self.is_wayland:
             monitor = await self._ensure_x11_clipboard_monitor_async()
             if monitor is not None and not monitor.owns_selection():
@@ -6630,6 +6989,10 @@ class WebRTCInput:
             True when the clipboard was set (an empty payload is a no-op True).
         """
         if not data:
+            return True
+        if (self._clipboard_inject_active
+                and self._clipboard_inject_owner is not asyncio.current_task()):
+            self._clipboard_deferred_write = (data, mime_type)
             return True
         input_bytes = data if isinstance(data, bytes) else data.encode('utf-8')
         self._clipboard_last_bytes = input_bytes
@@ -6931,6 +7294,7 @@ class WebRTCInput:
         first_pass = True
         had_consumers = False
         reread_pending = 0
+        inject_edge_pending = False
         try:
             while self.clipboard_running:
                 try:
@@ -6969,6 +7333,10 @@ class WebRTCInput:
                         # user makes another.
                         reread_pending -= 1
                         await asyncio.sleep(_CLIPBOARD_REREAD_DELAY_S)
+                        changed = True
+                    elif inject_edge_pending and not self._clipboard_inject_active:
+                        # Edges skipped during a text injection, read once it ended.
+                        inject_edge_pending = False
                         changed = True
                     elif x11_monitor is not None:
                         if not x11_monitor.alive():
@@ -7045,6 +7413,11 @@ class WebRTCInput:
                     if not changed:
                         continue
                     if not has_consumers:
+                        continue
+                    if self._clipboard_inject_active:
+                        # A text injection's own selection: reading it would
+                        # count as the paste being delivered.
+                        inject_edge_pending = True
                         continue
 
                     use_binary = self.enable_binary_clipboard in ["true", "out"]
@@ -7395,7 +7768,7 @@ class WebRTCInput:
                         f"virtual-keyboard batch failed ({e}); pasting via clipboard")
                 if not await self._inject_text_via_clipboard(combined_text):
                     logger_webrtc_input.warning(
-                        f"Batched text injection failed; {len(combined_text)} chars dropped.")
+                        f"Batched text injection of {len(combined_text)} chars not confirmed.")
 
         while True:
             try:
@@ -7641,12 +8014,22 @@ class WebRTCInput:
                 if keysym in self.pressed_keys:
                     self.pressed_keys[keysym] = now
         elif msg_type in ["m", "m2"]:
+            if RAKKORD_PERF:
+                PERF_INPUT.note()
             relative = msg_type == "m2"
             # Dropped rather than defaulted: a default would warp to the origin.
             try: x, y, button_mask, scroll_magnitude = [int(i) for i in toks[1:]]
             except (ValueError, IndexError): return
             try: await self.send_x11_mouse(x, y, button_mask, scroll_magnitude, relative, display_id=display_id)
             except Exception as e: logger_webrtc_input.warning(f"Failed to set mouse cursor: {e}")
+        elif msg_type == "ws":
+            try: dx, dy = float(toks[1]), float(toks[2])
+            except (ValueError, IndexError): return
+            try: self.send_smooth_scroll(dx, dy)
+            except Exception as e: logger_webrtc_input.warning(f"Failed to inject scroll: {e}")
+        elif msg_type == "t":
+            try: self.send_touch(toks[1:], display_id=display_id, conn_id=conn_id)
+            except Exception as e: logger_webrtc_input.warning(f"Failed to inject touch: {e}")
         elif msg_type == "p": await self.on_mouse_pointer_visible(bool(int(toks[1])))
         elif msg_type == "vp":
             # Where this display's page shows its stream on the user's desktop,

@@ -63,6 +63,8 @@
 import { GamepadManager } from './gamepad.js';
 import { Queue, isMacDesktop } from './util.js';
 import { streamGeometryFromSink, mapClientToStream } from './input-geometry.js';
+import { lockScrollAxis, ScrollAccumulator, releaseVelocity, inertiaStep, pinchView } from './touch-gestures.js';
+import { TouchFeedback } from './touch-feedback.js';
 
 /** CSS class on elements (and their descendants) whose input stays native. */
 const WHITELIST_CLASS = 'allow-native-input';
@@ -77,6 +79,56 @@ const WHITELIST_CLASS = 'allow-native-input';
  * @type {number}
  */
 const PIXEL_DELTA_PER_NOTCH_SMOOTH = 34;
+
+/**
+ * Compositor scroll-axis units in one notch: what the server injects for one
+ * `m2` scroll click, so a `ws` delta of this size scrolls exactly one notch.
+ * @type {number}
+ */
+const SCROLL_AXIS_UNITS_PER_NOTCH = 10;
+
+/**
+ * Time constant, in milliseconds, of the exponential easing that spreads a
+ * discrete wheel notch over frames: 98% of it has landed after four, 120 ms.
+ * @type {number}
+ */
+const SMOOTH_SCROLL_TAU_MS = 30;
+
+/**
+ * Eased remainder, in axis units, below which the rest of a notch is sent at
+ * once, so the tail of the curve does not trickle hundredths for a frame each.
+ * @type {number}
+ */
+const SMOOTH_SCROLL_SNAP_UNITS = 0.05;
+
+/**
+ * Largest `ws` delta on one axis, the server's clamp; anything beyond it
+ * carries to the next frame.
+ * @type {number}
+ */
+const SMOOTH_SCROLL_MAX_UNITS = 200;
+
+/**
+ * Height in CSS pixels of the caret line assumed under a click while the
+ * server reports no caret: about one line of remote body text at the stream's
+ * usual scale, so the IME window opens just under the clicked line.
+ * @type {number}
+ */
+const IME_FALLBACK_LINE_CSS_PX = 18;
+
+/**
+ * Counts one pointer-motion message sent, and its spacing, into the ws core's
+ * pipeline meter (`window.__rdPerf`, see `rdPerf` there); callers test that
+ * it is on first, so an idle meter costs them that one test.
+ */
+function _rdPerfNoteMoveSent() {
+    const perf = globalThis.__rdPerf;
+    const now = performance.now();
+    perf.mv++;
+    const iv = now - perf.mv_last;
+    if (perf.mv_last > 0 && iv < 1000 && perf.mv_iv.length < 512) perf.mv_iv.push(iv);
+    perf.mv_last = now;
+}
 
 /**
  * A `MouseEvent.buttons` bitmask in the wire's numbering, which counts buttons
@@ -1457,6 +1509,24 @@ export class Input {
          * idle gap.
          */
         this._lastWheelEventTs = 0;
+        /**
+         * Whether wheel input goes out as `ws` axis deltas rather than `m2`
+         * scroll clicks: off until the core reports a server that offers it
+         * (`setSmoothScroll`), so a server without the verb keeps scrolling.
+         */
+        this.smoothScroll = false;
+        /**
+         * Pending `ws` distance in axis units: `_smoothEase*` from a discrete
+         * wheel, eased out over frames; `_smoothDirect*` from a trackpad, whose
+         * engine already applies momentum, sent whole on the next frame.
+         */
+        this._smoothEaseX = 0;
+        this._smoothEaseY = 0;
+        this._smoothDirectX = 0;
+        this._smoothDirectY = 0;
+        /** The scheduled `ws` frame and the timestamp of the previous one. */
+        this._smoothFrame = null;
+        this._smoothFrameTs = null;
         this.cursorScaleFactor = null;
         this._cursorBase64Data = null;
 
@@ -1500,24 +1570,62 @@ export class Input {
         this._assistTyped = "";
         /** Whether the composition in progress is in the assist field. */
         this._assistComposing = false;
+        /** Remote caret the server reported (`ime_caret`), in frame pixels, or null when it knows none. */
+        this._imeServerCaret = null;
+        /** Caret estimate from the last primary press over the stream, in frame pixels, used while the server knows none. */
+        this._imeClickCaret = null;
+        /** Whether a caret change arrived mid-composition and waits for it to settle. */
+        this._imeCaretPending = false;
 
-        this._activeTouches = new Map();
-        this._activeTouchIdentifier = null;
-        this._isTwoFingerGesture = false;
-        this._MIN_SWIPE_DISTANCE = 30;
-        this._MAX_SWIPE_DURATION = 600;
+        /** Direct-touch contacts by identifier, each with where it landed and where it is. */
+        this._touchPoints = new Map();
+        /** What the direct-touch gesture is: null, pending, scroll, drag, tapdrag, longpress, two, twoscroll, pinch, done or ignored. */
+        this._touchMode = null;
+        this._touchPrimary = null;
+        this._touchTwo = null;
+        this._touchLast = null;
+        this._touchSamples = [];
+        this._lastTouchTap = null;
+        this._touchRing = null;
+        this._longPressTimer = null;
+        this._touchInertiaTimer = null;
+        this._touchCursorTimer = null;
+        this._touchScrollAxis = 'xy';
+        this._touchFeedback = new TouchFeedback();
+        this._touchView = { scale: 1, tx: 0, ty: 0 };
+        this._touchSwipeScroll = true;
+        this._touchPinchZoom = true;
+        this._touchInertia = true;
+        this._touchLongPressMs = 600;
+        this._touchNativePreferred = true;
+        this._touchNativeAvailable = false;
+        this._nativeContacts = new Map();
+        this._nativeNextId = 1;
+        this._TOUCH_SLOP = 12;
+        this._DOUBLE_TAP_MS = 300;
+        this._DOUBLE_TAP_RADIUS = 30;
+        this._TWO_FINGER_TAP_MS = 300;
+        this._PINCH_SLOP = 24;
+        this._MAX_VIEW_ZOOM = 4;
+        this._VIEW_ZOOM_SNAP = 1.05;
+        this._LONG_PRESS_RING_DELAY_MS = 150;
+        this._TOUCH_CURSOR_MS = 1200;
+        this._INERTIA_SAMPLE_MS = 80;
+        this._INERTIA_MIN_SPEED = 0.3;
+        this._INERTIA_STOP_SPEED = 0.02;
+        this._INERTIA_TAU_MS = 325;
         this._VERTICAL_SWIPE_RATIO = 1.5;
         this._SCROLL_PIXELS_PER_TICK = 40;
         this._MAX_SCROLL_MAGNITUDE = 8;
+        this._touchScrollX = new ScrollAccumulator(this._SCROLL_PIXELS_PER_TICK);
+        this._touchScrollY = new ScrollAccumulator(this._SCROLL_PIXELS_PER_TICK);
         this._TAP_THRESHOLD_DISTANCE_SQ = 10*10;
-        this._TAP_MAX_DURATION = 250;
         this._trackpadMode = false;
         this._trackpadTouches = new Map();
         this._trackpadLastTapTime = 0;
         this._trackpadGestureMode = null;
         this._trackpadTapTimeout = null;
         this._trackpadLastScrollCentroid = null;
-        this._touchScrollLastCentroid = null;
         this.inputAttached = false;
     }
 
@@ -1701,6 +1809,7 @@ export class Input {
             this._cursorBase64Data = null;
             this.cursorDiv.style.display = 'none';
             this._hideLocalCursor();
+            this._logCursorUpdate(cursorData, 'hidden');
             return;
         }
         this._rawHotspotX = parseInt(cursorData.hotx) || 0;
@@ -1710,17 +1819,57 @@ export class Input {
             this.cursorDiv.style.display = 'none';
             this.element.style.cursor = 'auto';
             this._restoreLocalCursor();
+            this._logCursorUpdate(cursorData, 'detached');
             return;
         }
         if (this.use_browser_cursors) {
             this.cursorDiv.style.display = 'none';
             this._updateBrowserCursor();
+            this._logCursorUpdate(cursorData, 'css');
         } else {
             this._cursorImageBitmap = await this._cursorBitmapFromBase64(this._cursorBase64Data);
             this._hideLocalCursor();
             this.cursorDiv.style.display = 'block';
             this._drawAndScaleCursor();
+            this._logCursorUpdate(cursorData, 'canvas');
         }
+    }
+
+    /**
+     * Logs one cursor update for diagnosing a bitmap paired with another
+     * cursor's hotspot, when `localStorage.rakkordCursorDebug` is `'1'`: the
+     * time, handle, hotspot, the PNG's own size read from its IHDR, a hash
+     * and length of the base64, the device pixel ratio and cursor density, and
+     * the CSS cursor in force with the data URL elided to its length.
+     * @param {{curdata?: string, handle: string|number, hotx?: string|number, hoty?: string|number}} cursorData
+     * @param {string} path Which branch of `updateServerCursor` applied it.
+     */
+    _logCursorUpdate(cursorData, path) {
+        let enabled = false;
+        try { enabled = localStorage.getItem('rakkordCursorDebug') === '1'; } catch (e) { /* storage blocked */ }
+        if (!enabled) return;
+        const b64 = cursorData.curdata || '';
+        let size = '-';
+        try {
+            // Signature (8) + IHDR length and type (8) + width and height (8) = 24 bytes = 32 base64 chars.
+            const head = atob(b64.slice(0, 32));
+            if (head.length >= 24 && head.slice(1, 4) === 'PNG') {
+                const u32 = (o) => ((head.charCodeAt(o) << 24) | (head.charCodeAt(o + 1) << 16)
+                    | (head.charCodeAt(o + 2) << 8) | head.charCodeAt(o + 3)) >>> 0;
+                size = `${u32(16)}x${u32(20)}`;
+            }
+        } catch (e) { size = 'bad'; }
+        // FNV-1a over the base64 text: enough to tell two bitmaps apart.
+        let hash = 0x811c9dc5;
+        for (let i = 0; i < b64.length; i++) {
+            hash = Math.imul(hash ^ b64.charCodeAt(i), 0x01000193);
+        }
+        const css = (this.element.style.getPropertyValue('cursor') || '')
+            .replace(/url\("data:image\/png;base64,[^"]*"\)/g, `url(<b64 ${b64.length}>)`);
+        console.log('[cursor]', performance.now().toFixed(1), path,
+            `handle=${cursorData.handle}`, `hot=${cursorData.hotx},${cursorData.hoty}`,
+            `png=${size}`, `b64=${b64.length}#${(hash >>> 0).toString(16).padStart(8, '0')}`,
+            `dpr=${window.devicePixelRatio}`, `density=${this._cursorDensity()}`, `css=${css}`);
     }
 
     /** Marks input as synthetic (tests), which disables the keydown stuck-modifier heal. */
@@ -1868,6 +2017,7 @@ export class Input {
     _onVisibilityChange() {
         if (document.visibilityState === 'hidden') {
             this.resetKeyboard();
+            this.clearPendingScroll();
         }
     }
 
@@ -2316,7 +2466,78 @@ export class Input {
                 el.value = '';
             }
             this._resetAssist();
+            if (this._imeCaretPending) this._applyImeCaret();
         }, 0);
+    }
+
+    /**
+     * Takes the remote caret from an `ime_caret` message.
+     * @param {?{x: number, y: number, w: number, h: number}} rect Caret in frame pixels, or null when the server knows none.
+     */
+    setImeCaret(rect) {
+        const valid = rect && [rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) && rect.h > 0;
+        this._imeServerCaret = valid ? { x: rect.x, y: rect.y, h: rect.h } : null;
+        this._applyImeCaret();
+    }
+
+    /**
+     * Moves the composition host's insertion point onto the remote caret.
+     *
+     * The browser opens its IME window at the insertion point of the focused
+     * element, and the composition host is the overlay spanning the whole
+     * stream, whose empty single-line insertion point sits at its left edge,
+     * halfway down. Padding narrows its content box to one caret-high line at
+     * the caret instead, so the IME window opens under the remote text field
+     * while the overlay keeps covering the stream for pointer input; moving or
+     * replacing the focused element would instead disturb the composition
+     * and keyboard flow bound to it. The server's caret wins; without one the
+     * last primary press stands in, since a text field is clicked before it is
+     * typed in. A change mid-composition waits for it to settle, because the
+     * IME window would jump with the preedit the remote caret follows.
+     */
+    _applyImeCaret() {
+        if (this.isComposing) {
+            this._imeCaretPending = true;
+            return;
+        }
+        this._imeCaretPending = false;
+        const el = this.element;
+        const m = this.m;
+        if (!el || el.tagName !== 'INPUT' || !el.style || !m) return;
+        const caret = this._imeServerCaret || this._imeClickCaret;
+        if (!caret) {
+            for (const prop of ['boxSizing', 'paddingLeft', 'paddingTop', 'paddingBottom', 'fontSize', 'lineHeight']) {
+                el.style[prop] = '';
+            }
+            return;
+        }
+        // Frame pixels to the element's CSS box, then to its layout box, which padding is in.
+        const toLayoutX = (fx) => (fx / m.mouseMultiX + m.mouseOffsetX) * m.layoutPerCssX;
+        const toLayoutY = (fy) => (fy / m.mouseMultiY + m.mouseOffsetY) * m.layoutPerCssY;
+        const h = Math.min(Math.max(caret.h / m.mouseMultiY * m.layoutPerCssY, 8), m.layoutH);
+        const x = Math.min(Math.max(toLayoutX(caret.x), 0), Math.max(m.layoutW - 2, 0));
+        const y = Math.min(Math.max(toLayoutY(caret.y), 0), m.layoutH - h);
+        el.style.boxSizing = 'border-box';
+        el.style.paddingLeft = `${x}px`;
+        el.style.paddingTop = `${y}px`;
+        el.style.paddingBottom = `${Math.max(m.layoutH - y - h, 0)}px`;
+        el.style.fontSize = `${h}px`;
+        el.style.lineHeight = `${h}px`;
+    }
+
+    /**
+     * Records a primary press over the stream as the caret estimate.
+     * @param {MouseEvent} event The press, in client pixels.
+     */
+    _noteImeClickCaret(event) {
+        if (!this.m) return;
+        const lineFrame = IME_FALLBACK_LINE_CSS_PX * this.m.mouseMultiY;
+        this._imeClickCaret = {
+            x: this._clientToServerX(event.clientX),
+            y: this._clientToServerY(event.clientY) - lineFrame / 2,
+            h: lineFrame,
+        };
+        if (!this._imeServerCaret) this._applyImeCaret();
     }
 
     /** Empties the assist field and forgets what was typed from it. */
@@ -2557,6 +2778,10 @@ export class Input {
      * it after an Escape unlock while the click still goes to the server.
      */
     _mouseButtonMovement(event) {
+        if (globalThis.__rdPerf?.on && event.type === 'mousemove') {
+            globalThis.__rdPerf.mm++;
+            globalThis.__rdPerf.mm_coal += event.getCoalescedEvents ? event.getCoalescedEvents().length : 1;
+        }
         if (this.buttonMask === 0 && event.target !== this.element) {
             return;
         }
@@ -2663,6 +2888,9 @@ export class Input {
             // too, ending contact with no pointerup to follow.
             this.buttonMask = _wireButtons(event.buttons);
         }
+        if (down && event.button === 0 && mtype === "m" && event.target === this.element) {
+            this._noteImeClickCaret(event);
+        }
         const outX = (mtype === "m2") ? relX : this.x;
         const outY = (mtype === "m2") ? relY : this.y;
         if (event.type === 'mousemove' || event.type === 'pointermove') {
@@ -2675,6 +2903,7 @@ export class Input {
             } else {
                 this.send([ "m", outX, outY, this.buttonMask, 0 ].join(","));
             }
+            if (globalThis.__rdPerf?.on) _rdPerfNoteMoveSent();
         }
     }
 
@@ -2725,9 +2954,11 @@ export class Input {
             const moved = this._relativeToServer(m.x, m.y);
             if (moved[0] === 0 && moved[1] === 0) return;
             this.send([ m.mtype, moved[0], moved[1], m.buttonMask, 0 ].join(","));
+            if (globalThis.__rdPerf?.on) _rdPerfNoteMoveSent();
             return;
         }
         this.send([ m.mtype, m.x, m.y, m.buttonMask, 0 ].join(","));
+        if (globalThis.__rdPerf?.on) _rdPerfNoteMoveSent();
     }
 
     /** Pen pointer events feed the mouse path; other pointer types arrive as mouse events. */
@@ -2772,6 +3003,7 @@ export class Input {
         const changedTouches = event.changedTouches;
 
         if (type === 'touchstart') {
+            this._stopTouchInertia();
             if (this._trackpadTapTimeout) {
                 clearTimeout(this._trackpadTapTimeout);
                 this._trackpadTapTimeout = null;
@@ -2801,6 +3033,10 @@ export class Input {
             else if (touchCount === 2) {
                 this._trackpadGestureMode = 'scrolling';
                 this._trackpadLastTapTime = 0;
+                this._touchScrollAxis = 'xy';
+                this._touchScrollX.reset();
+                this._touchScrollY.reset();
+                this._touchSamples = [];
                 const touches = Array.from(this._trackpadTouches.values());
                 this._trackpadLastScrollCentroid = {
                     x: (touches[0].lastX + touches[1].lastX) / 2,
@@ -2857,9 +3093,8 @@ export class Input {
                     if (this._trackpadLastScrollCentroid) {
                         const deltaX = curr_avg_x - this._trackpadLastScrollCentroid.x;
                         const deltaY = curr_avg_y - this._trackpadLastScrollCentroid.y;
-                        const SCROLL_THRESHOLD = 2;
-                        if (Math.abs(deltaY) > SCROLL_THRESHOLD) this._triggerMouseWheel(deltaY < 0 ? 'down' : 'up', 1);
-                        if (Math.abs(deltaX) > SCROLL_THRESHOLD) this._triggerHorizontalMouseWheel(deltaX < 0 ? 'left' : 'right', 1);
+                        this._touchScrollBy(deltaX, deltaY);
+                        this._pushTouchSample(now, curr_avg_x, curr_avg_y);
                     }
                     this._trackpadLastScrollCentroid = { x: curr_avg_x, y: curr_avg_y };
                 }
@@ -2885,6 +3120,11 @@ export class Input {
 
             for (const touch of changedTouches) {
                 this._trackpadTouches.delete(touch.identifier);
+            }
+
+            if (this._trackpadGestureMode === 'scrolling' && type === 'touchend') {
+                this._startTouchInertia(now);
+                this._trackpadGestureMode = 'completed';
             }
 
             if (this._trackpadTouches.size === 0) {
@@ -3492,18 +3732,11 @@ export class Input {
         }
 
         console.log(`Input: Trackpad mode ${newMode ? 'enabled' : 'disabled'}.`);
+        this._cancelNativeTouch();
         this._trackpadMode = newMode;
 
-        this._activeTouches.clear();
-        this._activeTouchIdentifier = null;
-        this._isTwoFingerGesture = false;
-        this._touchScrollLastCentroid = null;
-
-        if (this._longPressTimer) {
-            clearTimeout(this._longPressTimer);
-            this._longPressTimer = null;
-            this._longPressTouchIdentifier = null;
-        }
+        this._resetTouchGesture();
+        this._setTouchView({ scale: 1, tx: 0, ty: 0 });
 
         if (this.buttonMask !== 0) {
             this.buttonMask = 0;
@@ -3562,6 +3795,36 @@ export class Input {
         }
     }
 
+    /**
+     * Chooses between `ws` axis deltas and `m2` scroll clicks for wheel input.
+     * The core enables it only when the server's settings payload offers
+     * `smooth_scroll`. Pending distance is dropped on a change.
+     * @param {boolean} enabled
+     */
+    setSmoothScroll(enabled) {
+        const want = !!enabled;
+        if (this.smoothScroll === want) return;
+        this.smoothScroll = want;
+        this.clearPendingScroll();
+        console.log(`Input: smooth scrolling ${want ? 'enabled' : 'disabled'}.`);
+    }
+
+    /**
+     * Drops the scroll distance not yet sent and stops the frame loop, so a
+     * hidden page, a lost focus or a closed connection cannot scroll later.
+     */
+    clearPendingScroll() {
+        this._smoothEaseX = 0;
+        this._smoothEaseY = 0;
+        this._smoothDirectX = 0;
+        this._smoothDirectY = 0;
+        if (this._smoothFrame !== null) {
+            cancelAnimationFrame(this._smoothFrame);
+            this._smoothFrame = null;
+        }
+        this._smoothFrameTs = null;
+    }
+
     /** Switches between the CSS cursor and the page-drawn cursor canvas. */
     async setUseBrowserCursors(enabled) {
         const newMode = !!enabled;
@@ -3591,9 +3854,25 @@ export class Input {
     }
 
     /**
-     * Direct touch: a tap clicks at the touch point, a drag beyond the tap
-     * threshold holds the left button, a long press right-clicks, two fingers
-     * scroll, and a third finger releases everything.
+     * Direct touch, with the gestures of a touch screen rather than of a
+     * mouse: a tap clicks where it lands, however slowly the finger lifts; a
+     * swipe scrolls the window under the finger (or, with `swipeScroll` off,
+     * drags with the left button as a mouse would); a double tap whose second
+     * touch stays down drags with the left button, which is how text is
+     * selected; holding still fills a ring around the finger, and lifting
+     * once it is full right-clicks where the press began while moving instead
+     * drags with the left button from there; two fingers scroll, a quick
+     * two-finger tap right-clicks, and a pinch zooms the local view of the
+     * stream; a third finger or a cancel drops the gesture and releases
+     * whatever it held. The page shows each of these through `TouchFeedback`.
+     *
+     * Scrolling is measured in pixels, `_SCROLL_PIXELS_PER_TICK` to a wheel
+     * notch with the remainder carried, so the distance scrolled follows the
+     * finger whatever rate the screen delivers touch events at, and a flick
+     * keeps going with decaying inertia after the finger lifts.
+     *
+     * While native touch is active none of this applies: contacts go to the
+     * remote as they are (`_nativeTouchEvent`).
      */
     _handleTouchEvent(event) {
         if (this._trackpadMode) {
@@ -3602,233 +3881,595 @@ export class Input {
         }
         if (this._targetHasClass(event.target, WHITELIST_CLASS)) return;
         if (!this._guac_markEvent(event)) return;
-        const type = event.type;
-        const now = Date.now();
-        let preventDefault = false;
-        const LONG_PRESS_DURATION = 750;
-        let activeTouchMoved = false;
-        const LONG_PRESS_MAX_MOVEMENT_SQ = 15 * 15;
-        const TAP_THRESHOLD_DISTANCE_SQ_LOGICAL = this._TAP_THRESHOLD_DISTANCE_SQ;
-
-        if (type === 'touchstart') {
-            if (!this.use_browser_cursors) {
-                this.cursorDiv.style.display = 'block';
-            }
-            for (let i = 0; i < event.changedTouches.length; i++) {
-                const touch = event.changedTouches[i];
-                if (!this._activeTouches.has(touch.identifier)) {
-                    this._activeTouches.set(touch.identifier, {
-                        startX: touch.clientX, startY: touch.clientY,
-                        currentX: touch.clientX, currentY: touch.clientY,
-                        startTime: now, identifier: touch.identifier,
-                        longPressCompleted: false
-                    });
-                    if (i === 0) {
-                        this._calculateTouchCoordinates(touch);
-                    }
-                }
-            }
-            const touchCount = this._activeTouches.size;
-            if (touchCount === 1 && !this._isTwoFingerGesture) {
-                preventDefault = true;
-                const [singleTouchID] = this._activeTouches.keys();
-                const touchData = this._activeTouches.get(singleTouchID);
-                const currentTouchPoint = { clientX: touchData.currentX, clientY: touchData.currentY };
-                this._calculateTouchCoordinates(currentTouchPoint);
-                const physicalXAtPressStart = this.x;
-                const physicalYAtPressStart = this.y;
-                if (touchData && !touchData.longPressCompleted) {
-                    this._longPressTouchIdentifier = singleTouchID;
-                    if (this._longPressTimer) clearTimeout(this._longPressTimer);
-                    this._longPressTimer = setTimeout(() => {
-                        const currentActiveTouchData = this._activeTouches.get(this._longPressTouchIdentifier);
-                        if (currentActiveTouchData && this._activeTouches.size === 1 &&
-                            this._longPressTouchIdentifier === currentActiveTouchData.identifier &&
-                            !this._isTwoFingerGesture && this._activeTouchIdentifier === null &&
-                            !currentActiveTouchData.longPressCompleted) {
-                            const dx = currentActiveTouchData.currentX - currentActiveTouchData.startX;
-                            const dy = currentActiveTouchData.currentY - currentActiveTouchData.startY;
-                            const distSq = dx * dx + dy * dy;
-                            if (distSq < LONG_PRESS_MAX_MOVEMENT_SQ) {
-                                currentActiveTouchData.longPressCompleted = true;
-                                this.x = physicalXAtPressStart;
-                                this.y = physicalYAtPressStart;
-                                this.buttonMask |= (1 << 2);
-                                this._sendMouseState();
-                                setTimeout(() => {
-                                    if ((this.buttonMask & (1 << 2)) !== 0) {
-                                        this.buttonMask &= ~(1 << 2);
-                                        this._sendMouseState();
-                                    }
-                                }, 50);
-                            }
-                        }
-                        this._longPressTimer = null;
-                    }, LONG_PRESS_DURATION);
-                }
-            } else {
-                if (this._longPressTimer) { clearTimeout(this._longPressTimer); this._longPressTimer = null; }
-                if (touchCount === 2) {
-                    if (!this.use_browser_cursors) {
-                        this.cursorDiv.style.visibility = 'hidden';
-                    }
-                    this._isTwoFingerGesture = true; this._activeTouchIdentifier = null;
-                    const touches = Array.from(this._activeTouches.values());
-                    this._touchScrollLastCentroid = {
-                        x: (touches[0].currentX + touches[1].currentX) / 2,
-                        y: (touches[0].currentY + touches[1].currentY) / 2
-                    };
-                    if ((this.buttonMask & 1) === 1) this.buttonMask &= ~1;
-                    preventDefault = true;
-                } else if (touchCount > 2) {
-                    if (this._isTwoFingerGesture) this._isTwoFingerGesture = false;
-                    if (this._activeTouchIdentifier !== null) {
-                        this.buttonMask &= ~1; this._sendMouseState(); this._activeTouchIdentifier = null;
-                    }
-                }
-                if (touchCount !== 1) { this._longPressTouchIdentifier = null; }
-            }
-        } else if (type === 'touchmove') {
-            for (let i = 0; i < event.changedTouches.length; i++) {
-                const touch = event.changedTouches[i];
-                const touchData = this._activeTouches.get(touch.identifier);
-                if (touchData) {
-                    touchData.currentX = touch.clientX; touchData.currentY = touch.clientY;
-                    if (this._longPressTimer && touch.identifier === this._longPressTouchIdentifier) {
-                        const dx = touchData.currentX - touchData.startX;
-                        const dy = touchData.currentY - touchData.startY;
-                        const distSq = dx * dx + dy * dy;
-                        if (distSq >= LONG_PRESS_MAX_MOVEMENT_SQ) {
-                            clearTimeout(this._longPressTimer); this._longPressTimer = null;
-                        }
-                    }
-                }
-            }
-        }
-        if (this._isTwoFingerGesture && this._activeTouches.size === 2) {
-            preventDefault = true;
-            const touches = Array.from(this._activeTouches.values());
-            const curr_avg_x = (touches[0].currentX + touches[1].currentX) / 2;
-            const curr_avg_y = (touches[0].currentY + touches[1].currentY) / 2;
-            if (this._touchScrollLastCentroid) {
-                const deltaX = curr_avg_x - this._touchScrollLastCentroid.x;
-                const deltaY = curr_avg_y - this._touchScrollLastCentroid.y;
-                const SCROLL_THRESHOLD = 2;
-                if (Math.abs(deltaY) > SCROLL_THRESHOLD) this._triggerMouseWheel(deltaY < 0 ? 'down' : 'up', 1);
-                if (Math.abs(deltaX) > SCROLL_THRESHOLD) this._triggerHorizontalMouseWheel(deltaX < 0 ? 'left' : 'right', 1);
-            }
-            this._touchScrollLastCentroid = { x: curr_avg_x, y: curr_avg_y };
-        } else if (this._activeTouches.size === 1) {
-            const [singleTouchID] = this._activeTouches.keys();
-            const touchData = this._activeTouches.get(singleTouchID);
-            if (this._activeTouchIdentifier === singleTouchID) {
-                this._calculateTouchCoordinates({ clientX: touchData.currentX, clientY: touchData.currentY }); this._sendMouseState();
-                activeTouchMoved = true; preventDefault = true;
-            } else if (this._activeTouchIdentifier === null && !touchData.longPressCompleted) {
-                const dx = touchData.currentX - touchData.startX;
-                const dy = touchData.currentY - touchData.startY;
-                const distSq = dx * dx + dy * dy;
-                if (distSq >= TAP_THRESHOLD_DISTANCE_SQ_LOGICAL) {
-                    if (this._longPressTimer && singleTouchID === this._longPressTouchIdentifier) { clearTimeout(this._longPressTimer); this._longPressTimer = null; }
-                    this._activeTouchIdentifier = singleTouchID;
-                    this._calculateTouchCoordinates({ clientX: touchData.currentX, clientY: touchData.currentY });
-                    this.buttonMask |= 1; this._sendMouseState();
-                    activeTouchMoved = true; preventDefault = true;
-                } else { preventDefault = true; }
-            }
-        }
-        if (this._activeTouchIdentifier !== null && !activeTouchMoved && this._activeTouches.size > 0) {
-             preventDefault = true;
-        } else if (type === 'touchend' || type === 'touchcancel') {
-            const endedTouches = event.changedTouches;
-            let swipeDetected = false;
-            for (let i = 0; i < endedTouches.length; i++) {
-                const endedTouch = endedTouches[i];
-                const identifier = endedTouch.identifier;
-                const startData = this._activeTouches.get(identifier);
-                if (!startData) continue;
-                if (this._longPressTimer && identifier === this._longPressTouchIdentifier) {
-                    clearTimeout(this._longPressTimer); this._longPressTimer = null;
-                }
-                if (startData.longPressCompleted) {
-                    this._activeTouches.delete(identifier);
-                    if (identifier === this._longPressTouchIdentifier) this._longPressTouchIdentifier = null;
-                    preventDefault = true; continue;
-                }
-                startData.currentX = endedTouch.clientX; startData.currentY = endedTouch.clientY;
-                const duration = now - startData.startTime;
-                const deltaX = startData.currentX - startData.startX;
-                const deltaY = startData.currentY - startData.startY;
-                const deltaDistSq = deltaX * deltaX + deltaY * deltaY;
-                if (this._isTwoFingerGesture) {
-                    // Two-finger scrolling is handled above.
-                } else if (!swipeDetected && this._activeTouchIdentifier === null && this._activeTouches.size === 1 && this._activeTouches.has(identifier)) {
-                    if (duration < this._TAP_MAX_DURATION && deltaDistSq < TAP_THRESHOLD_DISTANCE_SQ_LOGICAL) {
-                        this._calculateTouchCoordinates(endedTouch); this.buttonMask |= 1; this._sendMouseState(); preventDefault = true;
-                        setTimeout(() => { this.buttonMask &= ~1; this._sendMouseState(); }, 10);
-                    }
-                } else if (!swipeDetected && identifier === this._activeTouchIdentifier) {
-                    this._calculateTouchCoordinates(endedTouch); this.buttonMask &= ~1; this._sendMouseState();
-                    this._activeTouchIdentifier = null; preventDefault = true;
-                }
-                this._activeTouches.delete(identifier);
-                if (identifier === this._longPressTouchIdentifier) this._longPressTouchIdentifier = null;
-            }
-            if (!swipeDetected) {
-                const remainingTouchCount = this._activeTouches.size;
-                if (this._isTwoFingerGesture && remainingTouchCount < 2) {
-                    if (!this._trackpadMode && !this.use_browser_cursors) {
-                        this.cursorDiv.style.visibility = 'visible';
-                    }
-                    this._isTwoFingerGesture = false;
-                    this._touchScrollLastCentroid = null;
-                }
-                if (remainingTouchCount === 0) {
-                    this._activeTouchIdentifier = null; this._isTwoFingerGesture = false;
-                    this._touchScrollLastCentroid = null;
-                    if (this._longPressTimer) { clearTimeout(this._longPressTimer); this._longPressTimer = null; }
-                    this._longPressTouchIdentifier = null;
-                }
-                if (remainingTouchCount > 0 && this._longPressTouchIdentifier && !this._activeTouches.has(this._longPressTouchIdentifier)) {
-                    if (this._longPressTimer) clearTimeout(this._longPressTimer);
-                    this._longPressTimer = null; this._longPressTouchIdentifier = null;
-                }
-                if (remainingTouchCount === 1) {
-                    const [newSingleTouchID] = this._activeTouches.keys();
-                    if (this._longPressTouchIdentifier !== newSingleTouchID) {
-                        if (this._longPressTimer) clearTimeout(this._longPressTimer);
-                        this._longPressTimer = null; this._longPressTouchIdentifier = null;
-                        const newTouchData = this._activeTouches.get(newSingleTouchID);
-                        if (newTouchData && !newTouchData.longPressCompleted) {
-                            const pseudoTouch = { clientX: newTouchData.currentX, clientY: newTouchData.currentY, identifier: newSingleTouchID };
-                            this._calculateTouchCoordinates(pseudoTouch);
-                            const physicalXAtPressStart = this.x; const physicalYAtPressStart = this.y;
-                            this._longPressTouchIdentifier = newSingleTouchID;
-                            this._longPressTimer = setTimeout(() => {
-                                const currentActiveTouchData = this._activeTouches.get(this._longPressTouchIdentifier);
-                                if (currentActiveTouchData && this._activeTouches.size === 1 && this._longPressTouchIdentifier === currentActiveTouchData.identifier && !this._isTwoFingerGesture && this._activeTouchIdentifier === null && !currentActiveTouchData.longPressCompleted) {
-                                    const dx = currentActiveTouchData.currentX - currentActiveTouchData.startX;
-                                    const dy = currentActiveTouchData.currentY - currentActiveTouchData.startY;
-                                    const distSq = dx * dx + dy * dy;
-                                    if (distSq < LONG_PRESS_MAX_MOVEMENT_SQ) {
-                                        currentActiveTouchData.longPressCompleted = true;
-                                        this.x = physicalXAtPressStart; this.y = physicalYAtPressStart;
-                                        this.buttonMask |= (1 << 2); this._sendMouseState();
-                                        setTimeout(() => { if ((this.buttonMask & (1 << 2)) !== 0) { this.buttonMask &= ~(1 << 2); this._sendMouseState(); } }, 50);
-                                    }
-                                }
-                                this._longPressTimer = null;
-                            }, LONG_PRESS_DURATION);
-                        }
-                    }
-                } else if (remainingTouchCount !== 1) {
-                     if (this._longPressTimer) clearTimeout(this._longPressTimer);
-                     this._longPressTimer = null; this._longPressTouchIdentifier = null;
-                }
-            }
-        }
-        if (preventDefault && this.element.contains(event.target)) {
+        if (this.element.contains(event.target)) {
             event.preventDefault();
+        }
+        const now = Date.now();
+        const fingers = (list) => Array.from(list || []).filter((t) => t.touchType !== 'stylus');
+        if (this.nativeTouchActive()) {
+            this._nativeTouchEvent(event.type, fingers(event.changedTouches), event.touches, now);
+            return;
+        }
+        const changed = fingers(event.changedTouches);
+        if (event.type === 'touchstart') this._dropStaleTouches(event.touches);
+        if (!changed.length) return;
+        switch (event.type) {
+            case 'touchstart': this._touchStart(changed, now); break;
+            case 'touchmove': this._touchMove(changed, now); break;
+            case 'touchend': this._touchEnd(changed, now, false); break;
+            case 'touchcancel': this._touchEnd(changed, now, true); break;
+            default: break;
+        }
+    }
+
+    /** Whether touches are sent to the remote desktop as touchscreen contacts. */
+    nativeTouchActive() {
+        return this._touchNativePreferred && this._touchNativeAvailable && !this._trackpadMode;
+    }
+
+    /**
+     * Records whether the server can deliver native touch; until it says so,
+     * and wherever it cannot, direct touch falls back to the emulated gestures.
+     * @param {boolean} available
+     */
+    setNativeTouchAvailable(available) {
+        this._switchTouchPath(() => { this._touchNativeAvailable = !!available; });
+    }
+
+    /** Applies a change that may move touch between the native and emulated paths, ending whatever the old path held. */
+    _switchTouchPath(change) {
+        const before = this.nativeTouchActive();
+        change();
+        if (before === this.nativeTouchActive()) return;
+        this._cancelNativeTouch();
+        this._resetTouchGesture();
+        if (this._touchView.scale !== 1) this._setTouchView({ scale: 1, tx: 0, ty: 0 });
+    }
+
+    /**
+     * Native touch: each finger is a touchscreen contact on the remote
+     * desktop, so the remote compositor and applications decide what a
+     * gesture means (a title bar drag moves its window, a swipe scrolls with
+     * the application's own inertia, a long press or pinch is the
+     * application's). One DOM event is one wire message, `t` followed by
+     * `kind,id,x,y` per changed contact, which the server delivers as one
+     * touch frame; `kind` is `d`own, `m`otion, `u`p or `c`ancel. Contact ids
+     * are fresh per contact, since the remote ignores a down on an id it
+     * still holds. Taps keep their ripple.
+     */
+    _nativeTouchEvent(type, changed, onScreen, now) {
+        const fields = [];
+        if (type === 'touchstart' && onScreen && this._nativeContacts.size) {
+            const live = new Set(Array.from(onScreen, (t) => t.identifier));
+            for (const [identifier, c] of this._nativeContacts) {
+                if (live.has(identifier)) continue;
+                fields.push('u', c.id, c.x, c.y);
+                this._nativeContacts.delete(identifier);
+            }
+        }
+        for (const t of changed) {
+            const known = this._nativeContacts.get(t.identifier);
+            if (type === 'touchstart') {
+                if (known) continue;
+                const [x, y] = this._nativeTouchPoint(t);
+                const c = { id: this._nativeNextId, x, y, startX: t.clientX, startY: t.clientY, start: now, moved: false };
+                this._nativeNextId = (this._nativeNextId % 0x7fffffff) + 1;
+                this._nativeContacts.set(t.identifier, c);
+                fields.push('d', c.id, x, y);
+            } else if (!known) {
+                continue;
+            } else if (type === 'touchmove') {
+                const [x, y] = this._nativeTouchPoint(t);
+                if (Math.hypot(t.clientX - known.startX, t.clientY - known.startY) > this._TOUCH_SLOP) known.moved = true;
+                if (x === known.x && y === known.y) continue;
+                known.x = x;
+                known.y = y;
+                fields.push('m', known.id, x, y);
+            } else if (type === 'touchcancel') {
+                this._nativeContacts.clear();
+                fields.push('c', known.id, known.x, known.y);
+                break;
+            } else {
+                this._nativeContacts.delete(t.identifier);
+                fields.push('u', known.id, known.x, known.y);
+                if (!known.moved && now - known.start < this._touchLongPressMs) {
+                    this._touchFeedback.tap(t.clientX, t.clientY);
+                }
+            }
+        }
+        if (fields.length) this.send(['t', ...fields].join(','));
+    }
+
+    /** Maps a touch into remote framebuffer pixels without disturbing the pointer position mouse input keeps. */
+    _nativeTouchPoint(t) {
+        const keepX = this.x;
+        const keepY = this.y;
+        this._calculateTouchCoordinates(t);
+        const point = [this.x, this.y];
+        this.x = keepX;
+        this.y = keepY;
+        return point;
+    }
+
+    /** Ends every native contact on the remote, as a lost touch sequence. */
+    _cancelNativeTouch() {
+        if (!this._nativeContacts.size) return;
+        this._nativeContacts.clear();
+        this.send('t,c,0,0,0');
+    }
+
+    /**
+     * Forgets the gesture when a contact it tracks is no longer on the
+     * screen: Safari can drop a touchend around system gestures or a
+     * relayout, and a contact that never ends would leave every later touch
+     * waiting for it.
+     */
+    _dropStaleTouches(onScreen) {
+        if (!onScreen || !this._touchPoints.size) return;
+        const ids = new Set(Array.from(onScreen, (t) => t.identifier));
+        for (const id of this._touchPoints.keys()) {
+            if (!ids.has(id)) {
+                this._resetTouchGesture();
+                return;
+            }
+        }
+    }
+
+    /** Records new contacts and decides what the first one, or the second, starts. */
+    _touchStart(touches, now) {
+        const stoppedInertia = !!this._touchInertiaTimer;
+        this._stopTouchInertia();
+        if (this._touchView.scale !== 1) this._touchViewFor(this._touchContainerSize());
+        for (const t of touches) {
+            if (this._touchPoints.has(t.identifier)) continue;
+            this._touchPoints.set(t.identifier, {
+                id: t.identifier, startX: t.clientX, startY: t.clientY,
+                x: t.clientX, y: t.clientY, screenX: t.screenX, screenY: t.screenY,
+                stopsInertia: stoppedInertia,
+            });
+        }
+        const count = this._touchPoints.size;
+        const mode = this._touchMode;
+        if (count >= 3) {
+            this._resetTouchGesture('ignored');
+            return;
+        }
+        if (count === 2 && (mode === null || mode === 'pending' || mode === 'scroll' || mode === 'longpress')) {
+            this._cancelTouchLongPress();
+            this._touchHideCursor();
+            const [a, b] = this._touchPoints.values();
+            const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+            this._touchTwo = {
+                startTime: now, startCenter: center, lastCenter: center,
+                startSpread: Math.hypot(a.x - b.x, a.y - b.y),
+                startView: this._touchViewFor(this._touchContainerSize()),
+            };
+            this._touchSamples = [];
+            this._touchMode = 'two';
+            return;
+        }
+        if (count !== 1 || mode !== null) return;
+
+        const [p] = this._touchPoints.values();
+        this._touchPrimary = p.id;
+        const last = this._lastTouchTap;
+        this._lastTouchTap = null;
+        if (last && now - last.time <= this._DOUBLE_TAP_MS
+            && Math.hypot(p.x - last.x, p.y - last.y) <= this._DOUBLE_TAP_RADIUS) {
+            this._touchMode = 'tapdrag';
+            this._touchFeedback.tap(p.x, p.y, true);
+            this._touchButton(p.x, p.y, 1, true);
+            return;
+        }
+        this._touchMode = 'pending';
+        this._armTouchLongPress(p, now);
+    }
+
+    /** Follows the contacts, turning a pending touch into a scroll or a drag once it leaves the slop. */
+    _touchMove(touches, now) {
+        for (const t of touches) {
+            const p = this._touchPoints.get(t.identifier);
+            if (!p) continue;
+            p.x = t.clientX; p.y = t.clientY;
+            p.screenX = t.screenX; p.screenY = t.screenY;
+        }
+        const mode = this._touchMode;
+        if (mode === 'two' || mode === 'twoscroll' || mode === 'pinch') {
+            this._touchTwoMove(now);
+            return;
+        }
+        const p = this._touchPoints.get(this._touchPrimary);
+        if (!p) return;
+        if (mode === 'pending' || mode === 'longpress') {
+            const dx = p.x - p.startX;
+            const dy = p.y - p.startY;
+            if (dx * dx + dy * dy < this._TOUCH_SLOP * this._TOUCH_SLOP) return;
+            this._cancelTouchLongPress();
+            if (mode === 'pending' && this._touchSwipeScroll) {
+                this._touchMode = 'scroll';
+                this._touchHideCursor();
+                this._touchHover(p.startX, p.startY);
+                this._touchScrollAxis = lockScrollAxis(dx, dy, this._VERTICAL_SWIPE_RATIO);
+                this._touchScrollX.reset();
+                this._touchScrollY.reset();
+                this._touchScrollBy(dx, dy);
+                this._touchLast = { x: p.x, y: p.y };
+                this._touchSamples = [{ t: now, x: p.x, y: p.y }];
+                return;
+            }
+            // A swipe in drag mode, or a full ring that moves: the left button
+            // goes down where the finger first landed, so a selection starts there.
+            this._touchMode = 'drag';
+            this._touchButton(p.startX, p.startY, 1, true);
+            this._touchDragTo(p);
+            return;
+        }
+        if (mode === 'scroll') {
+            this._touchScrollBy(p.x - this._touchLast.x, p.y - this._touchLast.y);
+            this._touchLast = { x: p.x, y: p.y };
+            this._pushTouchSample(now, p.x, p.y);
+            return;
+        }
+        if (mode === 'drag' || mode === 'tapdrag') {
+            this._touchDragTo(p);
+        }
+    }
+
+    /** Two contacts: wait for them to travel or spread, then scroll, or zoom and pan the view. */
+    _touchTwoMove(now) {
+        if (this._touchPoints.size !== 2 || !this._touchTwo) return;
+        const [a, b] = this._touchPoints.values();
+        const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const spread = Math.hypot(a.x - b.x, a.y - b.y);
+        const g = this._touchTwo;
+        if (this._touchMode === 'two') {
+            const travel = Math.hypot(center.x - g.startCenter.x, center.y - g.startCenter.y);
+            const zoomed = g.startView.scale > 1;
+            if (this._touchPinchZoom && Math.abs(spread - g.startSpread) >= this._PINCH_SLOP) {
+                this._touchMode = 'pinch';
+            } else if (travel >= this._TOUCH_SLOP) {
+                // Zoomed in, two fingers move the view; the remote still scrolls under one.
+                this._touchMode = (zoomed && this._touchPinchZoom) ? 'pinch' : 'twoscroll';
+            } else {
+                return;
+            }
+            if (this._touchMode === 'twoscroll') {
+                this._touchHover(g.startCenter.x, g.startCenter.y);
+                this._touchScrollAxis = lockScrollAxis(center.x - g.startCenter.x,
+                    center.y - g.startCenter.y, this._VERTICAL_SWIPE_RATIO);
+                this._touchScrollX.reset();
+                this._touchScrollY.reset();
+            }
+        }
+        if (this._touchMode === 'twoscroll') {
+            this._touchScrollBy(center.x - g.lastCenter.x, center.y - g.lastCenter.y);
+            this._pushTouchSample(now, center.x, center.y);
+        } else {
+            const box = this._touchContainerSize();
+            if (box) {
+                const origin = { x: box.left, y: box.top };
+                const rel = (pt) => ({ x: pt.x - origin.x, y: pt.y - origin.y });
+                this._setTouchView(pinchView(g.startView, rel(g.startCenter), g.startSpread,
+                    rel(center), spread, box.width, box.height, 1, this._MAX_VIEW_ZOOM), box);
+            }
+        }
+        g.lastCenter = center;
+    }
+
+    /** Ends contacts: the primary's lift completes its gesture, a cancel releases everything. */
+    _touchEnd(touches, now, cancelled) {
+        const ended = [];
+        for (const t of touches) {
+            const p = this._touchPoints.get(t.identifier);
+            if (!p) continue;
+            p.x = t.clientX; p.y = t.clientY;
+            ended.push(p);
+        }
+        if (cancelled) {
+            if (ended.length) this._resetTouchGesture('ignored');
+        } else {
+            for (const p of ended) {
+                this._finishTouch(p, now);
+            }
+        }
+        for (const p of ended) {
+            this._touchPoints.delete(p.id);
+        }
+        if (this._touchPoints.size === 0) {
+            this._touchMode = null;
+            this._touchPrimary = null;
+            this._touchTwo = null;
+            this._touchFeedback.clear();
+        }
+    }
+
+    /** Completes the gesture one lifted contact belonged to. */
+    _finishTouch(p, now) {
+        const mode = this._touchMode;
+        if (mode === 'two' || mode === 'twoscroll' || mode === 'pinch') {
+            const g = this._touchTwo;
+            if (mode === 'two' && g && now - g.startTime <= this._TWO_FINGER_TAP_MS) {
+                this._touchFeedback.tap(g.startCenter.x, g.startCenter.y);
+                this._touchClick(g.startCenter.x, g.startCenter.y, 4, 50);
+            } else if (mode === 'twoscroll') {
+                this._startTouchInertia(now);
+            } else if (mode === 'pinch' && this._touchView.scale < this._VIEW_ZOOM_SNAP) {
+                this._setTouchView({ scale: 1, tx: 0, ty: 0 });
+            }
+            this._touchMode = 'done';
+            return;
+        }
+        if (p.id !== this._touchPrimary) return;
+        if (mode === 'pending' && p.stopsInertia) {
+            // A tap that stops a coasting scroll only stops it, as on iOS.
+            this._cancelTouchLongPress();
+        } else if (mode === 'pending') {
+            this._cancelTouchLongPress();
+            this._touchFeedback.tap(p.x, p.y);
+            this._touchClick(p.x, p.y, 1, 10);
+            this._lastTouchTap = { time: now, x: p.x, y: p.y };
+        } else if (mode === 'longpress') {
+            this._cancelTouchLongPress();
+            this._touchClick(p.startX, p.startY, 4, 50);
+        } else if (mode === 'scroll') {
+            this._startTouchInertia(now);
+        } else if (mode === 'drag' || mode === 'tapdrag') {
+            this._touchButton(p.x, p.y, 1, false);
+            this._touchFeedback.dot(null);
+        }
+        this._touchMode = 'done';
+    }
+
+    /**
+     * Fills the long-press ring: it appears once the finger has rested for
+     * `_LONG_PRESS_RING_DELAY_MS`, so an ordinary tap shows none, and is
+     * full at `_touchLongPressMs`, when the touch becomes `longpress`.
+     */
+    _armTouchLongPress(p, startedAt) {
+        this._cancelTouchLongPress();
+        const total = this._touchLongPressMs;
+        const delay = Math.min(this._LONG_PRESS_RING_DELAY_MS, total / 2);
+        const tick = () => {
+            this._longPressTimer = null;
+            if (this._touchMode !== 'pending' || this._touchPrimary !== p.id) return;
+            const elapsed = Date.now() - startedAt;
+            if (elapsed >= delay && !this._touchRing) {
+                this._touchRing = this._touchFeedback.ring(p.startX, p.startY);
+            }
+            if (elapsed >= total) {
+                this._touchMode = 'longpress';
+                if (this._touchRing) this._touchRing.armed();
+                return;
+            }
+            if (this._touchRing) this._touchRing.progress((elapsed - delay) / (total - delay));
+            this._longPressTimer = setTimeout(tick, elapsed < delay ? delay - elapsed : 16);
+        };
+        this._longPressTimer = setTimeout(tick, delay);
+    }
+
+    /** Stops the long-press ring, wherever it had got to. */
+    _cancelTouchLongPress() {
+        if (this._longPressTimer) {
+            clearTimeout(this._longPressTimer);
+            this._longPressTimer = null;
+        }
+        if (this._touchRing) {
+            this._touchRing.hide();
+            this._touchRing = null;
+        }
+    }
+
+    /**
+     * Drops the touch gesture: stops inertia and the ring, and releases a
+     * button a drag holds, leaving `mode` until every finger has lifted.
+     * @param {?string} mode `ignored` swallows the remaining contacts, `null` forgets them.
+     */
+    _resetTouchGesture(mode = null) {
+        this._stopTouchInertia();
+        this._cancelTouchLongPress();
+        if ((this._touchMode === 'drag' || this._touchMode === 'tapdrag') && (this.buttonMask & 1)) {
+            this.buttonMask &= ~1;
+            this._sendMouseState();
+        }
+        this._touchFeedback.clear();
+        this._touchMode = mode;
+        this._touchTwo = null;
+        this._lastTouchTap = null;
+        if (mode === null) {
+            this._touchPoints.clear();
+            this._touchPrimary = null;
+        }
+    }
+
+    /** Moves the remote pointer to a client point without changing the buttons. */
+    _touchHover(x, y) {
+        this._calculateTouchCoordinates({ clientX: x, clientY: y });
+        this._sendMouseState();
+    }
+
+    /** Presses or releases one button at a client point, showing the cursor there. */
+    _touchButton(x, y, bit, down) {
+        this._touchShowCursor();
+        this._calculateTouchCoordinates({ clientX: x, clientY: y });
+        if (down) {
+            this.buttonMask |= bit;
+            this._touchFeedback.dot(x, y);
+        } else {
+            this.buttonMask &= ~bit;
+        }
+        this._sendMouseState();
+    }
+
+    /** Clicks one button at a client point, releasing it `holdMs` later. */
+    _touchClick(x, y, bit, holdMs) {
+        this._touchButton(x, y, bit, true);
+        this._touchFeedback.dot(null);
+        setTimeout(() => {
+            if (this.buttonMask & bit) {
+                this.buttonMask &= ~bit;
+                this._sendMouseState();
+            }
+        }, holdMs);
+    }
+
+    /** Moves a held drag to a contact. */
+    _touchDragTo(p) {
+        this._touchShowCursor();
+        this._calculateTouchCoordinates({ clientX: p.x, clientY: p.y, screenX: p.screenX, screenY: p.screenY });
+        this._sendMouseState();
+        this._touchFeedback.dot(p.x, p.y);
+    }
+
+    /**
+     * Shows the page-drawn cursor where a touch clicks, then hides it again
+     * after `_TOUCH_CURSOR_MS`, so the point that was hit can be checked.
+     */
+    _touchShowCursor() {
+        if (this.use_browser_cursors || !this.inputAttached) return;
+        this.cursorDiv.style.display = 'block';
+        if (this._touchCursorTimer) clearTimeout(this._touchCursorTimer);
+        this._touchCursorTimer = setTimeout(() => {
+            this._touchCursorTimer = null;
+            if (!this._trackpadMode && !this.use_browser_cursors) this.cursorDiv.style.display = 'none';
+        }, this._TOUCH_CURSOR_MS);
+    }
+
+    /** Hides the page-drawn cursor while a touch scrolls or zooms. */
+    _touchHideCursor() {
+        if (this.use_browser_cursors) return;
+        if (this._touchCursorTimer) {
+            clearTimeout(this._touchCursorTimer);
+            this._touchCursorTimer = null;
+        }
+        this.cursorDiv.style.display = 'none';
+    }
+
+    /**
+     * Scrolls by a finger movement in CSS pixels, along the locked axis.
+     * Content follows the finger: moving it up scrolls down, moving it left
+     * scrolls right.
+     */
+    _touchScrollBy(dx, dy) {
+        const axis = this._touchScrollAxis;
+        const cap = this._MAX_SCROLL_MAGNITUDE;
+        if (axis !== 'x') {
+            const n = this._touchScrollY.add(-dy);
+            if (n) this._triggerMouseWheel(n > 0 ? 'down' : 'up', Math.min(cap, Math.abs(n)));
+        }
+        if (axis !== 'y') {
+            const n = this._touchScrollX.add(-dx);
+            if (n) this._triggerHorizontalMouseWheel(n > 0 ? 'right' : 'left', Math.min(cap, Math.abs(n)));
+        }
+    }
+
+    _pushTouchSample(t, x, y) {
+        this._touchSamples.push({ t, x, y });
+        if (this._touchSamples.length > 8) this._touchSamples.shift();
+    }
+
+    /** Keeps a flick scrolling after the finger lifts, decaying until it is too slow to notice. */
+    _startTouchInertia(now) {
+        this._stopTouchInertia();
+        if (!this._touchInertia) return;
+        let { vx, vy } = releaseVelocity(this._touchSamples, now, this._INERTIA_SAMPLE_MS);
+        this._touchSamples = [];
+        if (this._touchScrollAxis === 'y') vx = 0;
+        if (this._touchScrollAxis === 'x') vy = 0;
+        if (Math.hypot(vx, vy) < this._INERTIA_MIN_SPEED) return;
+        let last = now;
+        const step = () => {
+            const t = Date.now();
+            const dt = Math.min(64, Math.max(1, t - last));
+            last = t;
+            const sx = inertiaStep(vx, dt, this._INERTIA_TAU_MS);
+            const sy = inertiaStep(vy, dt, this._INERTIA_TAU_MS);
+            vx = sx.v; vy = sy.v;
+            this._touchScrollBy(sx.distance, sy.distance);
+            this._touchInertiaTimer = Math.hypot(vx, vy) < this._INERTIA_STOP_SPEED
+                ? null : setTimeout(step, 16);
+        };
+        this._touchInertiaTimer = setTimeout(step, 16);
+    }
+
+    _stopTouchInertia() {
+        if (this._touchInertiaTimer) {
+            clearTimeout(this._touchInertiaTimer);
+            this._touchInertiaTimer = null;
+        }
+    }
+
+    /** The stream container's client box, which the zoomed view is laid out in, or null. */
+    _touchContainerSize() {
+        const c = this._streamContainer;
+        if (!c || typeof c.getBoundingClientRect !== 'function') return null;
+        const r = c.getBoundingClientRect();
+        return r && r.width > 0 && r.height > 0
+            ? { left: r.left, top: r.top, width: r.width, height: r.height } : null;
+    }
+
+    /** The current view, reset to unzoomed if the container has been resized under it. */
+    _touchViewFor(box) {
+        const v = this._touchView;
+        if (v.scale !== 1 && box && (box.width !== v.width || box.height !== v.height)) {
+            this._setTouchView({ scale: 1, tx: 0, ty: 0 });
+        }
+        return { scale: this._touchView.scale, tx: this._touchView.tx, ty: this._touchView.ty };
+    }
+
+    /**
+     * Applies the local view zoom to every stream sink. The transform is
+     * about the container's top-left, whatever offset the sink is laid out
+     * at, so one view serves all of them; input needs no change, since
+     * pointer mapping measures the sink's transformed client box.
+     * @param {{scale: number, tx: number, ty: number}} view
+     * @param {?{width: number, height: number}} [box]
+     */
+    _setTouchView(view, box = null) {
+        const zoomed = view.scale > 1;
+        this._touchView = zoomed
+            ? { scale: view.scale, tx: view.tx, ty: view.ty, width: box?.width, height: box?.height }
+            : { scale: 1, tx: 0, ty: 0 };
+        if (typeof document === 'undefined') return;
+        for (const id of ['videoCanvas', 'stream', 'videoStream', 'videoWorkerCanvas']) {
+            const el = document.getElementById(id);
+            if (!el || !el.style) continue;
+            if (zoomed) {
+                el.style.transformOrigin = `${-(el.offsetLeft || 0)}px ${-(el.offsetTop || 0)}px`;
+                el.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`;
+            } else {
+                el.style.transform = '';
+                el.style.transformOrigin = '';
+            }
+        }
+        this._invalidateGeometry();
+        this._drawAndScaleCursor();
+    }
+
+    /** The local zoom of the stream view, 1 when unzoomed; size measurements divide by it. */
+    get viewZoom() {
+        return this._touchView.scale;
+    }
+
+    /**
+     * Applies the touch options the dashboard exposes.
+     * `native` picks native touch where the server offers it; the others
+     * shape the emulated gestures.
+     * @param {{native: (boolean|undefined), swipeScroll: (boolean|undefined),
+     *     longPressMs: (number|undefined), pinchZoom: (boolean|undefined),
+     *     inertia: (boolean|undefined)}} options
+     */
+    setTouchOptions(options) {
+        if (!options || typeof options !== 'object') return;
+        if (typeof options.native === 'boolean') {
+            this._switchTouchPath(() => { this._touchNativePreferred = options.native; });
+        }
+        if (typeof options.swipeScroll === 'boolean') this._touchSwipeScroll = options.swipeScroll;
+        if (typeof options.inertia === 'boolean') this._touchInertia = options.inertia;
+        const ms = Number(options.longPressMs);
+        if (Number.isFinite(ms) && ms >= 200 && ms <= 2000) this._touchLongPressMs = ms;
+        if (typeof options.pinchZoom === 'boolean') {
+            this._touchPinchZoom = options.pinchZoom;
+            if (!options.pinchZoom && this._touchView.scale !== 1) this._setTouchView({ scale: 1, tx: 0, ty: 0 });
         }
     }
 
@@ -3920,7 +4561,8 @@ export class Input {
      * (trackpads report pixels). The throttle rate-limits emission but drops
      * no delta: throttled ticks accumulate and flush at the window end. A
      * discrete wheel emits per event, so a fast spin never collapses to the
-     * throttle rate.
+     * throttle rate. Under `smoothScroll` the same classification feeds
+     * `_smoothWheel` instead, which needs no throttle.
      */
     _mouseWheelWrapper(event) {
         // One idle second is longer than any intra-gesture gap (momentum
@@ -3931,7 +4573,11 @@ export class Input {
         }
         this._lastWheelEventTs = nowTs;
         if (event.deltaMode !== 0) {
-            this._mouseWheel(event);
+            if (this.smoothScroll) {
+                this._smoothWheel(event, true);
+            } else {
+                this._mouseWheel(event);
+            }
             event.preventDefault();
             return;
         }
@@ -3940,7 +4586,9 @@ export class Input {
         if (this._queue.size() == 4) {
             this._allowThreshold = !this._isDiscreteWheel();
         }
-        if (this._allowThreshold) {
+        if (this.smoothScroll) {
+            this._smoothWheel(event, !this._allowThreshold);
+        } else if (this._allowThreshold) {
             if (this._allowTrackpadScrolling) {
                 this._allowTrackpadScrolling = false;
                 this._mouseWheel(event);
@@ -4059,6 +4707,85 @@ export class Input {
         this._emitWheelX();
     }
 
+    /**
+     * Queues one wheel event as `ws` distance: the fractional notches
+     * `_wheelNotches` and `_wheelNotchesX` give the click path, in axis units
+     * and signed like the DOM delta (positive is down and right, the
+     * convention `ws` shares with the server's scroll clicks). A discrete
+     * wheel's distance is eased, and a reversal drops what is still easing
+     * the other way, as a browser's own smooth scroll does; a trackpad's goes
+     * out whole on the next frame.
+     * @param {WheelEvent} event
+     * @param {boolean} discrete Whether the device is a notched wheel.
+     */
+    _smoothWheel(event, discrete) {
+        let dy = Math.sign(event.deltaY) * this._wheelNotches(event.deltaY, event.deltaMode) * SCROLL_AXIS_UNITS_PER_NOTCH;
+        let dx = Math.sign(event.deltaX) * this._wheelNotchesX(event.deltaX, event.deltaMode) * SCROLL_AXIS_UNITS_PER_NOTCH;
+        if (!Number.isFinite(dy)) { dy = 0; }
+        if (!Number.isFinite(dx)) { dx = 0; }
+        if (!dx && !dy) { return; }
+        if (discrete) {
+            this._smoothEaseX = (this._smoothEaseX * dx < 0) ? dx : this._smoothEaseX + dx;
+            this._smoothEaseY = (this._smoothEaseY * dy < 0) ? dy : this._smoothEaseY + dy;
+        } else {
+            this._smoothDirectX += dx;
+            this._smoothDirectY += dy;
+        }
+        if (this._smoothFrame === null) {
+            this._smoothFrame = requestAnimationFrame((ts) => this._smoothScrollFrame(ts));
+        }
+    }
+
+    /**
+     * The part of an eased distance due this frame.
+     * @param {number} pending Eased distance still to send.
+     * @param {number} share Fraction of it the elapsed time owes.
+     * @returns {number}
+     */
+    _smoothEaseStep(pending, share) {
+        const step = pending * share;
+        return (Math.abs(pending - step) < SMOOTH_SCROLL_SNAP_UNITS) ? pending : step;
+    }
+
+    /**
+     * Sends at most one `ws` message per frame: the trackpad distance whole
+     * plus the eased wheel distance the elapsed time owes, rounded to
+     * hundredths and clamped to the server's bound, with whatever rounding
+     * or the clamp held back carried to the next frame. The loop stops once
+     * nothing is pending.
+     * @param {number} ts The frame timestamp.
+     */
+    _smoothScrollFrame(ts) {
+        this._smoothFrame = null;
+        // A first frame has no predecessor; one display frame stands in.
+        const dt = (this._smoothFrameTs === null) ? 1000 / 60 : Math.min(100, Math.max(0, ts - this._smoothFrameTs));
+        this._smoothFrameTs = ts;
+        const share = 1 - Math.exp(-dt / SMOOTH_SCROLL_TAU_MS);
+        const stepX = this._smoothEaseStep(this._smoothEaseX, share);
+        const stepY = this._smoothEaseStep(this._smoothEaseY, share);
+        this._smoothEaseX -= stepX;
+        this._smoothEaseY -= stepY;
+        const wantX = this._smoothDirectX + stepX;
+        const wantY = this._smoothDirectY + stepY;
+        const bound = (v) => Math.max(-SMOOTH_SCROLL_MAX_UNITS, Math.min(SMOOTH_SCROLL_MAX_UNITS, Math.round(v * 100) / 100));
+        const sendX = bound(wantX);
+        const sendY = bound(wantY);
+        this._smoothDirectX = wantX - sendX;
+        this._smoothDirectY = wantY - sendY;
+        if (sendX !== 0 || sendY !== 0) {
+            this.send(`ws,${sendX},${sendY}`);
+        }
+        const settled = this._smoothEaseX === 0 && this._smoothEaseY === 0
+            && Math.abs(this._smoothDirectX) < 0.005 && Math.abs(this._smoothDirectY) < 0.005;
+        if (settled) {
+            this._smoothDirectX = 0;
+            this._smoothDirectY = 0;
+            this._smoothFrameTs = null;
+            return;
+        }
+        this._smoothFrame = requestAnimationFrame((t) => this._smoothScrollFrame(t));
+    }
+
     /** Suppresses the native context menu over the stream. */
     _contextMenu(event) {
         if (this.element.contains(event.target)) {
@@ -4144,7 +4871,12 @@ export class Input {
             elementClientY: elementRect.top,
             frameW: geometry.sinkW,
             frameH: geometry.sinkH,
+            layoutW,
+            layoutH,
+            layoutPerCssX: layoutW / cssW,
+            layoutPerCssY: layoutH / cssH,
         };
+        this._applyImeCaret();
     }
 
     /** Frame-space X for a client X, unrounded so the device scale rounds once. */
@@ -4433,6 +5165,7 @@ export class Input {
         this.listeners_context.push(addListener(window, 'keydown', this._handleKeyDown, this, true));
         this.listeners_context.push(addListener(window, 'keyup', this._handleKeyUp, this, true));
         this.listeners_context.push(addListener(window, 'blur', this.resetKeyboard, this));
+        this.listeners_context.push(addListener(window, 'blur', this.clearPendingScroll, this));
         this.listeners_context.push(addListener(document, 'visibilitychange', this._onVisibilityChange, this));
         this.listeners_context.push(addListener(window, 'pagehide', this.resetKeyboard, this));
         // A frozen background tab stops the heartbeat, so keys are released first.
@@ -4527,13 +5260,14 @@ export class Input {
         this.cursorDiv.style.display = 'none';
         this.send("kr");
         this.resetKeyboard();
-        this._activeTouches.clear();
-        this._activeTouchIdentifier = null;
-        this._isTwoFingerGesture = false;
+        this._cancelNativeTouch();
+        this._resetTouchGesture();
+        this._touchFeedback.destroy();
         // A queued move must not send after detach; the scheduled flush then no-ops.
         this._pendingMove = null;
         this._relCarryX = 0;
         this._relCarryY = 0;
+        this.clearPendingScroll();
         if ((this.buttonMask & 1) === 1) {
              this.buttonMask &= ~1;
              this._sendMouseState();

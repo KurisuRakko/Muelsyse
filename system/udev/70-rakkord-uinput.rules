@@ -1,0 +1,28 @@
+# Sunshine (Moonlight) 以用户服务身份运行（账号 @USER@），需要写 /dev/uinput、/dev/uhid；
+# 中间人 rakkord-sunshine-input-bridge（sunshine/input-bridge）需要读 Sunshine 通过它们创建的虚拟输入设备。
+#
+# 发行版自带的 /usr/lib/udev/rules.d/60-sunshine.rules 依赖 TAG+="uaccess"，
+# 那套 ACL 需要 logind seat，而这台无头机器没有 seat，所以永远不会生效。
+# @USER@ 也刻意不加入 input 组：加组要等新登录会话才生效，
+# 而重建会话会杀掉正在运行的 Selkies 远程桌面。因此这里只把相关节点直接给 @USER@。
+#
+# 60 < 70，这些规则在自带规则之后执行，胜出。
+#
+# ⚠️ 实测（2026-09-19）：libvirtualhid 造出来的设备实际名字是
+# "libvirtualhid Mouse" / "libvirtualhid Keyboard" / "libvirtualhid Mouse (Absolute)" /
+# "libvirtualhid Touchscreen" / "libvirtualhid Pen Tablet"，
+# **不是**自带规则里写的 "Sunshine (libvirtualhid)*"，且 phys 为空。
+# 按自带规则的模式匹配会全部落空，所以这里按真实名字匹配。
+
+# /dev/uinput 与 /dev/uhid（misc 设备，模块加载时创建）
+KERNEL=="uinput", SUBSYSTEM=="misc", OWNER="@USER@", GROUP="@GROUP@", MODE="0660"
+KERNEL=="uhid",   SUBSYSTEM=="misc", OWNER="@USER@", GROUP="@GROUP@", MODE="0660"
+
+# Sunshine 的虚拟键鼠/触摸/手写板 evdev 节点（bridge 要读这些）
+SUBSYSTEMS=="input", ATTRS{name}=="libvirtualhid *", OWNER="@USER@", GROUP="@GROUP@", MODE="0660"
+# 兼容自带规则的命名，万一上游改回去
+SUBSYSTEMS=="input", ATTRS{name}=="Sunshine (libvirtualhid)*", OWNER="@USER@", GROUP="@GROUP@", MODE="0660"
+
+# Sunshine 的虚拟手柄（uhid -> hidraw），游戏直接读这些，不经过合成器
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", IMPORT{parent}="HID_*", ENV{HID_PHYS}=="libvirtualhid/uhid/*", OWNER="@USER@", GROUP="@GROUP@", MODE="0660"
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", IMPORT{parent}="HID_*", ENV{HID_NAME}=="libvirtualhid*", OWNER="@USER@", GROUP="@GROUP@", MODE="0660"

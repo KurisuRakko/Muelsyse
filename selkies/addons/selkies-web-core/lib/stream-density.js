@@ -15,16 +15,78 @@
  * 手动分辨率是例外：那是操作员点名的 framebuffer，没有可供倍率去乘的东西，密度
  * 固定为 1。盒子以流的原始尺寸为基准绘制；它实际被缩放到多大，由盒子的 fit 与
  * `publishedScale` 的实测比值表达，不由这里表达。
- * @param {{renderScale: (number|undefined), manual: (boolean|undefined)}} page
+ * 服务端给了像素预算（`stream_pixel_budget`）时，倍率会按 `budgetedRenderScale`
+ * 降档，保证 framebuffer 不超过预算；桌面 DPI 同比例降档（`budgetedScalingDpi`），
+ * 逻辑桌面尺寸不变。
+ * @param {{renderScale: (number|undefined), manual: (boolean|undefined),
+ *     css: (number[]|null|undefined), budget: (number|null|undefined)}} page
  *     `renderScale` 是渲染倍率，按倍数计（1 是 100%）；`manual` 是这个页面的
- *     分辨率是否由操作员指定。
+ *     分辨率是否由操作员指定；`css` 是流盒子的 CSS 尺寸，`budget` 是像素预算。
  * @returns {number}
  */
-export function streamDensity({ renderScale, manual }) {
+export function streamDensity({ renderScale, manual, css, budget }) {
     // 手动分辨率不受任何倍率影响：framebuffer 就是操作员要的那个数。
     if (manual) return 1;
     const scale = (Number.isFinite(renderScale) && renderScale > 0) ? renderScale : 1;
-    return scale;
+    return budgetedRenderScale(scale, css, budget);
+}
+
+/**
+ * 服务端像素预算的默认值：2600×1440。
+ *
+ * 在 Intel UHD 630 上实测（隔离 KWin 加 pixelflux VAAPI，全屏 60 fps 浏览器动画）：
+ * 3.7 MP 及以下稳定 59–61 fps，4.7 MP 中位 60、最低 46，5.6 MP 中位 47，7.3 MP（3640×2016）
+ * 只有 23–25 fps。合成与编码都随像素面积变慢，与网络无关。
+ */
+export const DEFAULT_STREAM_PIXEL_BUDGET = 2600 * 1440;
+
+/**
+ * The render scale a page actually streams at under the server's pixel budget.
+ *
+ * The largest `RENDER_SCALE_STOPS` multiplier no higher than the page's pick
+ * whose framebuffer (CSS size times it) fits `budget`, floored at 1x: below
+ * the window's own size there is no stop to fall to, and the remote desktop
+ * DPI has none to pair with it. Stops rather than an exact fit because the
+ * desktop DPI follows the same ratio (`budgetedScalingDpi`) and its stops are
+ * the same five multipliers, so the logical desktop keeps its size across the
+ * cap. A missing size or a budget of 0 leaves the pick alone.
+ * @param {number} renderScale The page's pick as a multiplier (1 is 100%).
+ * @param {(number[]|null|undefined)} css The stream box's CSS `[width, height]`.
+ * @param {(number|null|undefined)} budget Maximum framebuffer pixels; 0 or
+ *     absent disables the cap.
+ * @returns {number} A multiplier no higher than `renderScale`.
+ */
+export function budgetedRenderScale(renderScale, css, budget) {
+    if (!(budget > 0) || !css || !(css[0] > 0) || !(css[1] > 0)) return renderScale;
+    const fits = (scale) => (css[0] * scale) * (css[1] * scale) <= budget;
+    if (fits(renderScale)) return renderScale;
+    const lower = RENDER_SCALE_STOPS.map((pct) => pct / 100)
+        .filter((scale) => scale < renderScale - 1e-9)
+        .sort((x, y) => y - x);
+    for (const scale of lower) {
+        if (fits(scale)) return scale;
+    }
+    return Math.min(renderScale, 1);
+}
+
+/**
+ * The desktop DPI to ask for when the pixel budget lowered the render scale.
+ *
+ * The logical desktop is `framebuffer / (dpi / 96)`, so the DPI moves by the
+ * same ratio as the stream density to keep windows where they were; the result
+ * is snapped to the nearest of `DPI_STOPS`, which the server's DPI setting
+ * accepts, and is exact whenever the pick pairs a DPI stop with the same
+ * render-scale stop.
+ * @param {number} scalingDpi The page's desktop DPI pick.
+ * @param {number} renderScale The page's render-scale pick as a multiplier.
+ * @param {number} density The multiplier `streamDensity` settled on.
+ * @returns {number} One of `DPI_STOPS`, or `scalingDpi` when nothing was capped.
+ */
+export function budgetedScalingDpi(scalingDpi, renderScale, density) {
+    if (!(renderScale > 0) || Math.abs(density - renderScale) < 1e-9) return scalingDpi;
+    const target = scalingDpi * density / renderScale;
+    return DPI_STOPS.reduce((best, stop) =>
+        (Math.abs(stop - target) < Math.abs(best - target) ? stop : best), DPI_STOPS[0]);
 }
 
 /** `scaling_dpi` 收敛成 5 档：96/120/144/168/192，对应 1x / 1.25x / 1.5x / 1.75x / 2x。 */

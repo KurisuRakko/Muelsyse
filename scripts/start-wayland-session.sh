@@ -8,6 +8,7 @@ kwin_bin=${SELKIES_KWIN_BIN:-${kwin_prefix:+$kwin_prefix/bin/kwin_wayland}}
 kwin_bin=${kwin_bin:-/usr/bin/kwin_wayland}
 plasma_bin=${SELKIES_PLASMASHELL_BIN:-/usr/bin/plasmashell}
 activity_bin=${SELKIES_ACTIVITYMANAGER_BIN:-/usr/lib/x86_64-linux-gnu/libexec/kactivitymanagerd}
+xembed_bin=${SELKIES_XEMBEDSNIPROXY_BIN:-/usr/bin/xembedsniproxy}
 wayland_display=${WAYLAND_DISPLAY:-wayland-remote-desktop}
 socket_path="${XDG_RUNTIME_DIR:?}/${wayland_display}"
 xwayland_bin=${SELKIES_XWAYLAND_BIN:-/usr/bin/Xwayland}
@@ -40,15 +41,16 @@ fi
 kwin_pid=0
 plasma_pid=0
 activity_pid=0
+xembed_pid=0
 
 cleanup() {
     set +e
     # 逐个判断 pid > 0：pid 为 0 时 kill 的信号目标是整个进程组，会连带杀掉调用方与
     # 其它会话的进程，并且会让本函数再次被触发、一路递归下去。
-    for _pid in "$plasma_pid" "$activity_pid" "$kwin_pid"; do
+    for _pid in "$xembed_pid" "$plasma_pid" "$activity_pid" "$kwin_pid"; do
         ((_pid > 0)) && kill "$_pid" 2>/dev/null
     done
-    for _pid in "$plasma_pid" "$activity_pid" "$kwin_pid"; do
+    for _pid in "$xembed_pid" "$plasma_pid" "$activity_pid" "$kwin_pid"; do
         ((_pid > 0)) && wait "$_pid" 2>/dev/null
     done
     # 只清本会话自己的 X11 残留：助手写 lock 时用的是自己的 pid，而它随后 exec 成了
@@ -101,6 +103,17 @@ done
 # KDE 会话"的标志，XDG_MENU_PREFIX 决定菜单定义（applications.menu）的查找前缀，
 # 缺了它菜单会异常。
 #
+# KDE_SESSION_VERSION / KDE_SESSION_UID 是 kded6 自己的会话判据，缺一不可：
+# kded 的 Kded::initModules() 先看 KDE_FULL_SESSION 是否非空，再看
+# KDE_SESSION_VERSION 是否等于 6（不等就当作"不是 KDE 会话"），只有通过才自动加载
+# X-KDE-Kded-phase=1/2 的模块。statusnotifierwatcher（托盘 StatusNotifierWatcher 的
+# 提供者，metadata 里是 phase=1）就在这批模块里：判据不成立时 kded 只把
+# org.kde.StatusNotifierWatcher 这个名字占住（main() 里按 X-KDE-DBus-ServiceName
+# 排队注册），却不提供 /StatusNotifierWatcher 对象，于是所有 SNI 程序报
+# "No such object path '/StatusNotifierWatcher'"、面板托盘里一个图标都没有。
+# startplasma 在真机会话里正是用 KDE_FULL_SESSION=true + KDE_SESSION_VERSION=6 +
+# KDE_SESSION_UID=<uid> 这一组（plasma-workspace/startkde/startplasma.cpp）。
+#
 # 后端偏好给的是回退列表而不是单个后端：某个后端不可用时（升级后 GDK/Qt 的 Wayland
 # 平台插件缺失、插件路径被改坏、合成器还没起来）列表里的下一个后端还能让应用落回去
 # 启动；只写 wayland 等于把这条退路堵死，应用就直接起不来。
@@ -111,16 +124,21 @@ done
 # 后面启动 activity manager 与 plasmashell 的两行仍把 Qt 平台钉在 wayland、不跟随这份
 # 回退列表：它们是本会话合成器的组成部分，必须挂在本会话的 Wayland 上，回落到 xcb 只会
 # 连到宿主残留的 X11 显示上去；那两行也已经各自带上本会话的 DISPLAY/XAUTHORITY。
+# 三处环境（本进程 / systemd user manager / D-Bus 激活环境）都要写同一份值：kded6 是被
+# D-Bus 激活起来的，只认最后那份激活环境里的值。
+kde_session_uid=$(id -u)
+export KDE_FULL_SESSION=true KDE_SESSION_VERSION=6 KDE_SESSION_UID="$kde_session_uid"
 export DISPLAY="$x_display" XAUTHORITY="$xauth_file" WAYLAND_DISPLAY="$wayland_display" \
     XDG_SESSION_TYPE=wayland DESKTOP_SESSION=plasma \
-    XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_FULL_SESSION=true \
+    XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE \
     XDG_MENU_PREFIX=plasma- "GDK_BACKEND=wayland,x11" "QT_QPA_PLATFORM=wayland;xcb" \
     ELECTRON_OZONE_PLATFORM_HINT=auto MOZ_GTK_TITLEBAR_DECORATION=system
 unset VNCDESKTOP
 
 systemctl --user set-environment "DISPLAY=$x_display" "XAUTHORITY=$xauth_file" \
     "WAYLAND_DISPLAY=$wayland_display" XDG_SESSION_TYPE=wayland DESKTOP_SESSION=plasma \
-    XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_FULL_SESSION=true \
+    XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE \
+    KDE_FULL_SESSION=true KDE_SESSION_VERSION=6 "KDE_SESSION_UID=$kde_session_uid" \
     XDG_MENU_PREFIX=plasma- "GDK_BACKEND=wayland,x11" "QT_QPA_PLATFORM=wayland;xcb" \
     ELECTRON_OZONE_PLATFORM_HINT=auto MOZ_GTK_TITLEBAR_DECORATION=system
 systemctl --user unset-environment VNCDESKTOP || true
@@ -128,7 +146,8 @@ if command -v dbus-update-activation-environment >/dev/null 2>&1; then
     # --systemd 让 systemd user manager 与 D-Bus 激活环境拿到同一份值，避免两处不一致。
     dbus-update-activation-environment --systemd "DISPLAY=$x_display" "XAUTHORITY=$xauth_file" \
         "WAYLAND_DISPLAY=$wayland_display" XDG_SESSION_TYPE=wayland DESKTOP_SESSION=plasma \
-        XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_FULL_SESSION=true \
+        XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE \
+        KDE_FULL_SESSION=true KDE_SESSION_VERSION=6 "KDE_SESSION_UID=$kde_session_uid" \
         XDG_MENU_PREFIX=plasma- "GDK_BACKEND=wayland,x11" "QT_QPA_PLATFORM=wayland;xcb" \
         ELECTRON_OZONE_PLATFORM_HINT=auto MOZ_GTK_TITLEBAR_DECORATION=system || true
 fi
@@ -157,6 +176,40 @@ busctl --user status org.kde.ActivityManager >/dev/null 2>&1 || {
 # 误选宿主登录会话残留的 X11 display。
 env DISPLAY="$x_display" XAUTHORITY="$xauth_file" QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY="$wayland_display" "$plasma_bin" --no-respawn &
 plasma_pid=$!
+
+# 托盘（系统托盘图标）需要两件东西，标准会话里由 startplasma + XDG 自启带起来，这里补上。
+#
+# 其一是 SNI 中介 org.kde.StatusNotifierWatcher，由 kded6 的 statusnotifierwatcher 模块提供。
+# 上面补齐 KDE_SESSION_* 之后它本应自动加载，这里再显式 loadModule 兜一道底：该模块的
+# X-KDE-Kded-load-on-demand=false，没人主动加载就永远不会有人加载它，而失败症状又是静默的
+# （应用只会各自报 No such object path），所以宁可在会话启动时就把它验证掉。loadModule 对
+# 已加载的模块是幂等的；busctl 的调用本身会顺带 D-Bus 激活 kded6。
+#
+# 其二是 xembedsniproxy，把老式 XEmbed 托盘图标（wine 程序、星火商店那类）桥接成 SNI。它
+# 必须在 watcher 就绪之后再起，否则注册不上。作为本会话的子进程启动，跟着 cleanup 一起收。
+#
+# 整段都是非致命的：托盘起不来只是少个图标，不该连累整个远程桌面会话，所以只告警不 exit。
+tray_bootstrap() {
+    busctl --user call org.kde.kded6 /kded org.kde.kded6 loadModule s statusnotifierwatcher \
+        >/dev/null 2>&1 || return 1
+    for _ in $(seq 1 50); do
+        busctl --user introspect org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+            >/dev/null 2>&1 && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+if tray_bootstrap; then
+    if [[ -x "$xembed_bin" ]]; then
+        env DISPLAY="$x_display" XAUTHORITY="$xauth_file" "$xembed_bin" &
+        xembed_pid=$!
+    else
+        echo "WAYLAND_SESSION_WARN xembedsniproxy not executable: $xembed_bin" >&2
+    fi
+else
+    echo "WAYLAND_SESSION_WARN StatusNotifierWatcher unavailable; tray icons will not appear" >&2
+fi
 
 while kill -0 "$kwin_pid" 2>/dev/null; do
     if ! kill -0 "$plasma_pid" 2>/dev/null; then

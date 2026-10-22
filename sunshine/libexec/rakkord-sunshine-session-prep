@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Sunshine 的 global_prep_cmd 钩子：Moonlight 会话开始/结束时调用。
+#
+#   do   → 停掉 Selkies，并把 KWin 的软件光标恢复为可见
+#   undo → 恢复 Selkies
+#
+# 为什么需要恢复光标：Selkies 的 CSS 光标模式会通过 adapter socket 调用
+# KWin::Output::setSoftwareCursorSuppressed(true)，把光标从合成画面里拿掉
+# （它自己用 SPA_META_Cursor 元数据在浏览器端渲染）。这个抑制是 Output 级别的，
+# 所有 screencast 流都受影响，而 Sunshine 请求的是 CURSOR_MODE_EMBEDDED，
+# 于是 Moonlight 里就看不到光标。Selkies 的 restore_visible() 本该在断开时恢复，
+# 实测并不可靠，所以这里显式恢复一次。
+#
+# 任何一步失败都不能中止串流（Sunshine 规定 do 失败即取消启动），故一律吞掉错误。
+set -u
+
+SITE=@HOME@/.local/share/remote-desktop/selkies-kwin/site
+export PYTHONPATH="$SITE:/opt/selkies/lib/python3.13/site-packages"
+export XDG_RUNTIME_DIR=/run/user/@UID@
+
+# 按用户偏好设置光标由谁画（见 sunshine-cursor）。
+# 默认 remote：服务端合成，形状永远正确。
+# local：服务端不画，交给 Moonlight 本地渲染，零延迟但形状固定为客户端箭头。
+restore_cursor() {
+    local mode visible
+    mode=$(cat @HOME@/.config/sunshine/cursor-mode 2>/dev/null || echo remote)
+    if [ "$mode" = "local" ]; then visible=False; else visible=True; fi
+    python3 -c "
+import pixelflux
+pixelflux.ScreenCapture().set_host_cursor_visibility('wayland-remote-desktop', $visible)
+" 2>/dev/null || true
+}
+
+# 把 KWin 的虚拟输出调成 Moonlight 客户端请求的分辨率。
+#
+# 物理模式取客户端请求的分辨率（没有精确匹配的模式就用 3840x2160，KWin 的
+# virtual output 建不了新模式：kscreen-doctor 只能选现有的，pixelflux 的
+# resize_output 又要求 Selkies backend 在跑，而这里刚把它停了）。
+#
+# scale 独立于分辨率，由 ~/.config/sunshine/dpi-scale 决定（默认 2）。
+# 这一点很关键：早先的版本让「逻辑分辨率 == 请求分辨率」，于是客户端请求 4K 时
+# scale 被算成 1，桌面元素小到没法看。正确的是物理跑满、用 scale 控制 DPI，
+# 也就是 Retina 的做法：物理 3840x2160 + scale 2 = 逻辑 1920x1080，
+# 画面按 4K 编码传输（清晰），UI 按 1080p 的尺寸渲染（不小）。
+fit_resolution() {
+    local w="${SUNSHINE_CLIENT_WIDTH:-}" h="${SUNSHINE_CLIENT_HEIGHT:-}" scale mode
+    scale=$(cat @HOME@/.config/sunshine/dpi-scale 2>/dev/null || echo 2)
+    case "$scale" in ''|*[!0-9.]*) scale=2 ;; esac
+    [ -n "$w" ] && [ -n "$h" ] || return 0
+    case "$w$h" in *[!0-9]*) return 0 ;; esac
+
+    # ⚠️ Selkies 还在跑就绝对不要碰输出的 mode/scale。
+    # 2026-09-19 实测：用 kscreen-doctor 把 scale 设成 2，而 Selkies 读回来的
+    # realized geometry 仍是 scale 1.0，两边按不同 scale 算同一块缓冲区，
+    # pixelflux 直接 munmap_chunk(): invalid pointer → SIGABRT，
+    # Selkies 反复崩溃重启，@RAKKORD_PUBLIC_HOST@ 一直 502。
+    # 输出归 Selkies 管；只有它确实停了（selkies-policy=stop）才轮到我们调。
+    if systemctl --user is-active --quiet remote-desktop-selkies.service; then
+        printf '%s fit: skipped (selkies running, output is its to manage)\n' \
+            "$(date -Is)" >> @HOME@/.config/sunshine/session-prep.log 2>/dev/null || true
+        return 0
+    fi
+
+    # 在 KWin 现有模式里挑一个：优先尺寸完全相同，否则挑宽高比最接近请求的那个
+    # （比例不合会让 Moonlight 按比例缩放并在四周留黑边）。
+    # 建不了新模式：kscreen-doctor 只能选现有的，pixelflux 的 resize_output 要求
+    # Selkies 有活跃显示管道。想要新比例，用浏览器全屏开一次网页端让 Selkies 造出来。
+    mode=$(WAYLAND_DISPLAY=wayland-remote-desktop \
+           DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus \
+           /usr/bin/kscreen-doctor -o 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g' | grep -oE '[0-9]+x[0-9]+@60' | sort -u \
+        | python3 -c "
+import sys
+w,h=$w,$h
+best=None
+for line in sys.stdin:
+    s=line.strip().replace('@60','')
+    try: mw,mh=(int(x) for x in s.split('x'))
+    except ValueError: continue
+    exact = (mw==w and mh==h)
+    # 比例差 + 轻微偏好更高分辨率（同比例下更清晰）
+    key = (0 if exact else 1, abs(mw/mh - w/h), -mw)
+    if best is None or key < best[0]: best=(key,s)
+print(best[1] if best else '')
+" 2>/dev/null)
+    [ -n "$mode" ] || mode=3840x2160
+
+    WAYLAND_DISPLAY=wayland-remote-desktop \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@UID@/bus \
+    /usr/bin/kscreen-doctor \
+        output.Virtual-0.mode."${mode}@60" \
+        output.Virtual-0.scale."$scale" >/dev/null 2>&1 || true
+
+    printf '%s fit: client=%sx%s -> mode=%s scale=%s\n' \
+        "$(date -Is)" "$w" "$h" "$mode" "$scale" \
+        >> @HOME@/.config/sunshine/session-prep.log 2>/dev/null || true
+}
+
+case "${1:-do}" in
+    do)
+        # 记录客户端协商出来的参数，便于对齐分辨率/排查（Sunshine 只在 do 时传这些）。
+        printf '%s do: client=%sx%s fps=%s hdr=%s\n' \
+            "$(date -Is)" "${SUNSHINE_CLIENT_WIDTH:-?}" "${SUNSHINE_CLIENT_HEIGHT:-?}" \
+            "${SUNSHINE_CLIENT_FPS:-?}" "${SUNSHINE_CLIENT_HDR:-?}" \
+            >> @HOME@/.config/sunshine/session-prep.log 2>/dev/null || true
+        # 是否在 Moonlight 会话期间停掉 Selkies，由 ~/.config/sunshine/selkies-policy 决定。
+        # 默认 keep：停掉会让 cloudflared 后端消失，@RAKKORD_PUBLIC_HOST@ 直接 502。
+        # stop：省一份捕获开销（两个捕获流抢 GPU 时 Selkies 掉到过 4.6fps），但网页端不可用。
+        if [ "$(cat @HOME@/.config/sunshine/selkies-policy 2>/dev/null || echo keep)" = "stop" ]; then
+            /usr/bin/systemctl --user stop remote-desktop-selkies.service 2>/dev/null || true
+            sleep 0.5
+        fi
+        fit_resolution
+        restore_cursor
+        ;;
+    undo)
+        # 只在确实停过的时候才拉回来，免得无谓重启打断网页端会话。
+        if [ "$(cat @HOME@/.config/sunshine/selkies-policy 2>/dev/null || echo keep)" = "stop" ]; then
+            /usr/bin/systemctl --user start remote-desktop-selkies.service 2>/dev/null || true
+        fi
+        ;;
+esac
+exit 0

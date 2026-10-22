@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# 切换 Moonlight 串流里的光标由谁来画。
+#
+#   local  → 服务端不合成光标（KWin setSoftwareCursorSuppressed(true)）。
+#            由 Moonlight 客户端显示它自己的系统光标：零延迟、完全跟手。
+#            代价：形状固定是客户端的箭头，不会跟着远程变成 I 形/缩放箭头等
+#            （Moonlight/GameStream 协议不传光标形状，Sunshine 也没实现）。
+#   remote → 服务端把光标合成进画面。形状永远正确，但跟手程度受网络延迟影响。
+#
+# 选择会记到 ~/.config/sunshine/cursor-mode，rakkord-sunshine-session-prep（~/.local/libexec）在每次
+# Moonlight 会话开始时照此设置，所以重连后保持不变。
+set -u
+
+SITE=@HOME@/.local/share/remote-desktop/selkies-kwin/site
+export PYTHONPATH="$SITE:/opt/selkies/lib/python3.13/site-packages"
+export XDG_RUNTIME_DIR=/run/user/@UID@
+PREF=@HOME@/.config/sunshine/cursor-mode
+
+apply() {  # $1 = True|False
+    python3 -c "
+import pixelflux
+pixelflux.ScreenCapture().set_host_cursor_visibility('wayland-remote-desktop', $1)
+" 2>&1
+}
+
+case "${1:-status}" in
+    local)  apply False && echo local  > "$PREF" && echo "已切到 local：服务端不画光标，由 Moonlight 本地渲染（跟手）" ;;
+    remote) apply True  && echo remote > "$PREF" && echo "已切到 remote：服务端合成光标（形状正确，但有延迟）" ;;
+    status) echo "当前偏好: $(cat "$PREF" 2>/dev/null || echo 'remote（默认）')" ;;
+    *)      echo "用法: sunshine-cursor [local|remote|status]" >&2; exit 2 ;;
+esac

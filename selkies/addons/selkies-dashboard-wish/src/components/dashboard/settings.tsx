@@ -12,10 +12,11 @@
  * `serverSettings` (the server's settings payload, per key a `value`,
  * `allowed`, `min`/`max`, `default`, `locked` and `overridden`),
  * `effectiveCursorState`, `scalingDpiFollowed` (the desktop-DPI default the
- * core re-derived) and `audioDeviceSelected`. Changes go back as
+ * core re-derived), `audioDeviceSelected` and `touchOptionsUpdate`. Changes go back as
  * `window.postMessage` messages: `settings` (debounced key/value batches the
  * core forwards to the server), `mode`, `setScaleLocally`,
- * `setManualResolution`, `resetResolutionToWindow`, `setAntiAliasing`, and
+ * `setManualResolution`, `resetResolutionToWindow`, `setAntiAliasing`,
+ * `touchinput:options` (empty on mount, to ask for `touchOptionsUpdate`), and
  * whatever the shared conditional-setting specs post. The transport is seeded
  * from `window.__SELKIES_STREAMING_MODE__`, and `window.__selkiesModeSwitching`
  * is raised around a transport switch.
@@ -54,7 +55,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronUp } from "lucide-react";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { getPrefixedKey, getRoutePrefix, computeRenderableSettings, getLastServerSettings,
-    getLastEffectiveCursorState, getLastAudioDevices, isSecondaryDisplay } from "@/utils";
+    getLastEffectiveCursorState, getLastAudioDevices, isSecondaryDisplay, isMobileClient } from "@/utils";
 import { t, tl } from "@/i18n";
 
 /**
@@ -476,6 +477,20 @@ export function Settings() {
         RAW_POINTER_MOTION_SPEC, serverSettings, conditionalCtx, [serverSettings]);
     const [macCmdAsCtrl, setMacCmdAsCtrl] = useConditionalSetting(
         MAC_CMD_AS_CTRL_SPEC, serverSettings, conditionalCtx, [serverSettings]);
+    /** Direct-touch options as the core reports them (`touchOptionsUpdate`). */
+    const [touchOptions, setTouchOptions] = useState({
+        native: true, nativeAvailable: false,
+        swipeScroll: true, longPressMs: 600, pinchZoom: true, inertia: true,
+    });
+    const hasTouch = isMobileClient
+        || (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0);
+    /** Native touch is what direct touch does, and the emulated gestures' options do not apply. */
+    const nativeTouchActive = touchOptions.native && touchOptions.nativeAvailable;
+    /** Sends one direct-touch option to the core, which stores it and answers with `touchOptionsUpdate`. */
+    const setTouchOption = useCallback((key: string, value: boolean | number) => {
+        setTouchOptions((prev) => ({ ...prev, [key]: value }));
+        window.postMessage({ type: "touchinput:options", options: { [key]: value } }, window.location.origin);
+    }, []);
     /**
      * The cursor mode the core reports as actually in effect (multi-monitor
      * forces browser cursors on), null until reported; the toggle shows it
@@ -510,6 +525,10 @@ export function Settings() {
                     && localStorage.getItem(getPrefixedKey("scaling_dpi")) === null) {
                 setSelectedDpi(event.data.value);
             }
+            if (event.data?.type === "touchOptionsUpdate" && event.data.options
+                    && typeof event.data.options === "object") {
+                setTouchOptions((prev) => ({ ...prev, ...event.data.options }));
+            }
             // Echo of this dashboard's own pick: the dropdown shows what the core was told.
             if (event.data?.type === "audioDeviceSelected" && event.data.deviceId) {
                 if (event.data.context === "input") {
@@ -520,6 +539,7 @@ export function Settings() {
             }
         };
         window.addEventListener("message", handleMessage);
+        window.postMessage({ type: "touchinput:options" }, window.location.origin);
         return () => {
             window.removeEventListener("message", handleMessage);
         };
@@ -1118,6 +1138,77 @@ export function Settings() {
                                 <Switch
                                     checked={macCmdAsCtrl}
                                     onCheckedChange={handleMacCmdAsCtrlToggle}
+                                />
+                            </div>
+                        )}
+
+                        {hasTouch && touchOptions.nativeAvailable && (
+                            <div className="flex items-center justify-between">
+                                <div className="space-y-0.5">
+                                    <label className="text-sm font-medium" title={t('sections.screen.touchNativeTitle')}>
+                                        {t('sections.screen.touchNativeLabel')}
+                                    </label>
+                                </div>
+                                <Switch
+                                    checked={touchOptions.native}
+                                    onCheckedChange={(checked) => setTouchOption("native", checked)}
+                                />
+                            </div>
+                        )}
+
+                        {hasTouch && !nativeTouchActive && (
+                            <div className="flex items-center justify-between">
+                                <div className="space-y-0.5">
+                                    <label className="text-sm font-medium" title={t('sections.screen.touchSwipeScrollTitle')}>
+                                        {t('sections.screen.touchSwipeScrollLabel')}
+                                    </label>
+                                </div>
+                                <Switch
+                                    checked={touchOptions.swipeScroll}
+                                    onCheckedChange={(checked) => setTouchOption("swipeScroll", checked)}
+                                />
+                            </div>
+                        )}
+
+                        {hasTouch && !nativeTouchActive && (
+                            <div className="flex items-center justify-between">
+                                <div className="space-y-0.5">
+                                    <label className="text-sm font-medium" title={t('sections.screen.touchInertiaTitle')}>
+                                        {t('sections.screen.touchInertiaLabel')}
+                                    </label>
+                                </div>
+                                <Switch
+                                    checked={touchOptions.inertia}
+                                    onCheckedChange={(checked) => setTouchOption("inertia", checked)}
+                                />
+                            </div>
+                        )}
+
+                        {hasTouch && !nativeTouchActive && (
+                            <div className="flex items-center justify-between">
+                                <div className="space-y-0.5">
+                                    <label className="text-sm font-medium" title={t('sections.screen.touchPinchZoomTitle')}>
+                                        {t('sections.screen.touchPinchZoomLabel')}
+                                    </label>
+                                </div>
+                                <Switch
+                                    checked={touchOptions.pinchZoom}
+                                    onCheckedChange={(checked) => setTouchOption("pinchZoom", checked)}
+                                />
+                            </div>
+                        )}
+
+                        {hasTouch && !nativeTouchActive && (
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium" title={t('sections.screen.touchLongPressTitle')}>
+                                    {t('sections.screen.touchLongPressLabel')}: {touchOptions.longPressMs} ms
+                                </label>
+                                <Slider
+                                    min={400}
+                                    max={1000}
+                                    step={200}
+                                    value={[touchOptions.longPressMs]}
+                                    onValueChange={(value) => setTouchOption("longPressMs", value[0])}
                                 />
                             </div>
                         )}

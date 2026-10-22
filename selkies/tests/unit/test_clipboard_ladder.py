@@ -63,6 +63,9 @@ def make_handler(is_wayland: bool = False) -> WebRTCInput:
     h._x11_monitor_unavail_logged = False
     h._xclip_missing_warned = False
     h._x11_monitor_build_lock = asyncio.Lock()
+    h._clipboard_inject_active = False
+    h._clipboard_inject_owner = None
+    h._clipboard_deferred_write = None
     return h
 
 

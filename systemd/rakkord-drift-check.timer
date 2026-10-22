@@ -1,0 +1,10 @@
+[Unit]
+Description=每天跑一次 RakkoRD 漂移检查
+
+[Timer]
+OnCalendar=*-*-* 07:50:00
+Persistent=true
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

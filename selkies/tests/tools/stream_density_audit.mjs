@@ -16,7 +16,8 @@
 globalThis.window = { devicePixelRatio: 2 };
 
 const { streamDensity, publishedScale, autoScalingDpi, autoRenderScale,
-        DPI_STOPS, DEFAULT_DPI, RENDER_SCALE_STOPS, DEFAULT_RENDER_SCALE } = await import(
+        DPI_STOPS, DEFAULT_DPI, RENDER_SCALE_STOPS, DEFAULT_RENDER_SCALE,
+        DEFAULT_STREAM_PIXEL_BUDGET, budgetedRenderScale, budgetedScalingDpi } = await import(
     '../../addons/selkies-web-core/lib/stream-density.js');
 
 let failed = 0;
@@ -160,6 +161,33 @@ function check(label, ok, detail = '') {
         DEFAULT_DPI === 96, DEFAULT_DPI);
 }
 
+{
+    // 像素预算：超出预算的渲染倍率按档往下降，DPI 同比例降档，逻辑桌面不变。
+    const budget = DEFAULT_STREAM_PIXEL_BUDGET;
+    const css = [2080, 1152];
+    const capped = streamDensity({ renderScale: 1.75, css, budget });
+    check('a framebuffer over the budget drops to the largest stop that fits',
+        capped === 1.25, capped);
+    check('and the capped framebuffer is within the budget',
+        css[0] * capped * css[1] * capped <= budget, css[0] * capped * css[1] * capped);
+    const dpi = budgetedScalingDpi(168, 1.75, capped);
+    check('the desktop DPI drops by the same ratio, keeping the logical desktop',
+        dpi === 120 && Math.abs(css[0] * capped / (dpi / 96) - css[0]) < 1e-9, dpi);
+    check('a pick under the budget is left alone',
+        streamDensity({ renderScale: 1.25, css, budget }) === 1.25
+        && budgetedScalingDpi(120, 1.25, 1.25) === 120, '');
+    check('a budget of 0 disables the cap',
+        streamDensity({ renderScale: 1.75, css, budget: 0 }) === 1.75, '');
+    check('without a measured box the pick is left alone',
+        streamDensity({ renderScale: 1.75, budget }) === 1.75, '');
+    check('the cap never goes below the window\'s own size',
+        budgetedRenderScale(2, [3840, 2160], budget) === 1, budgetedRenderScale(2, [3840, 2160], budget));
+    check('a manual resolution ignores the budget',
+        streamDensity({ renderScale: 1.75, manual: true, css, budget }) === 1, '');
+    const offStop = budgetedScalingDpi(144, 1.75, 1.25);
+    check('an unpaired DPI snaps to the nearest stop the server accepts',
+        DPI_STOPS.includes(offStop), offStop);
+}
 
 console.log(`\n[stream-density] ${failed ? 'FAILED' : 'OK'}`);
 process.exit(failed ? 1 : 0);

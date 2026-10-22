@@ -335,6 +335,17 @@ SETTING_DEFINITIONS: List[Dict[str, Any]] = [
         },
         "help": "Framebuffer size as a percentage of the window's CSS size: the client asks for its window size times this, so 100 streams the window at its own size and 200 supersamples it. Independent of the remote desktop's own DPI (scaling_dpi), which sizes the remote fonts and icons.",
     },
+    # 像素预算：客户端把渲染倍率按档降到 framebuffer 不超过这个像素数，桌面 DPI
+    # 同比例降档，逻辑桌面尺寸不变。合成与编码的耗时随像素面积增长，超出预算的
+    # framebuffer 在服务端 GPU 上跑不满帧率，与网络无关。
+    {
+        "name": "stream_pixel_budget",
+        "type": "int",
+        "default": 3744000,
+        "min": 0,
+        "max": 16646400,
+        "help": "Largest framebuffer, in pixels, a page asks for: a render_scale whose framebuffer would exceed it is lowered stop by stop, with the desktop DPI lowered by the same ratio so the logical desktop keeps its size. 0 disables the cap. The default, 2600x1440, is what full-screen animation captured and encoded at 60 fps on an Intel UHD 630 (3640x2016 managed 23-25 fps).",
+    },
     {
         "name": "force_aligned_resolution",
         "type": "bool",
@@ -364,6 +375,12 @@ SETTING_DEFINITIONS: List[Dict[str, Any]] = [
         "type": "bool",
         "default": True,
         "help": "Send a macOS client's Command chords as their Control chords, so Cmd+C copies in the remote application the way it does locally. Turn it off where the session's window manager takes Super as its own modifier: remapped, a Cmd+Return bound to open a terminal arrives as Ctrl+Return, and Cmd+C interrupts the foreground program instead of copying. Command then arrives as the Super it physically is. Only macOS clients read it. Clients may override per user unless the value is locked.",
+    },
+    {
+        "name": "smooth_scroll",
+        "type": "bool",
+        "default": True,
+        "help": "Send wheel and trackpad scrolling as fractional axis deltas (the `ws` verb) instead of whole-notch scroll clicks: a trackpad's distance is forwarded every frame and a wheel notch is eased over about 120 ms, at the same distance per notch. A client only takes this path when the server's settings payload carries the setting switched on, so an older server keeps the click path. Clients may override per user unless the value is locked.",
     },
     {
         "name": "ui_title",
@@ -1064,6 +1081,12 @@ SETTING_DEFINITIONS: List[Dict[str, Any]] = [
         "min": 1,
         "max": 100000,
         "help": "Max frames/audio chunks buffered per stream before dropping under backpressure (WebSockets mode). Higher tolerates larger client hiccups at the cost of latency.",
+    },
+    {
+        "name": "adaptive_bitrate",
+        "type": "bool",
+        "default": True,
+        "help": "Steer each WebSockets display's H.264 bitrate by the queue its frame acknowledgements measure end to end: a queue that stands behind the video switches the display from constant quality to a bitrate cap that follows the path (a capped variable bitrate on VA-API, constant elsewhere; small keyframes, no multi-second backlog), and a clear path at the display's video_bitrate returns it to constant quality. With rate_control_mode=cbr the bitrate is steered below the user's pick. Disable to keep the encoder on the user's rate control only.",
     },
     {
         "name": "adaptive_frame_drop",

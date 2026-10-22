@@ -1,0 +1,6 @@
+# sunshine.conf 里归 RakkoRD 管的行（漂移检查 kind=check：这些行必须出现在生产的 sunshine.conf 里）。
+# 完整的 sunshine.conf 归主机所有：rakkord-sunshine-nvenc-prep.sh 每次 Sunshine 启动都会改写
+# encoder / adapter_name，Sunshine 网页端改设置也会重写整个文件，所以不能按 copy 逐字节管理。
+# 新机器初始化时以 sunshine/config/sunshine.conf 为模板手动放置（把 @HOME@、@RAKKORD_*@ 换成本机值，
+# 或 scripts/check-drift.py --render sunshine/config/sunshine.conf 生成）。@HOME@ 在比较前由部署脚本展开。
+global_prep_cmd = [{"do":"@HOME@/.local/libexec/rakkord-sunshine-session-prep do","undo":"@HOME@/.local/libexec/rakkord-sunshine-session-prep undo"}]

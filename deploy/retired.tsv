@@ -1,0 +1,22 @@
+# 部署改名后生产上应删除的旧路径。部署脚本在新文件装好、对应 unit 切换完成后才删；漂移检查报告它们是否还在。
+#
+# 格式：每行 3 列，TAB 分隔；空行与 # 开头的行忽略。
+#   old_target            主机上的旧路径（~/... 或绝对路径）
+#   replaced_by_repo_path 取代它的仓库文件（manifest 里的 repo_path）
+#   note                  说明（删之前要做的事等）
+#
+# old_target	replaced_by_repo_path	note
+~/.config/systemd/user/sunshine-input-bridge.service	sunshine/systemd/rakkord-sunshine-input.service	先 disable --now 旧 unit，再 enable 新 unit
+~/.config/systemd/user/selkies-preempts-moonlight.service	sunshine/systemd/rakkord-moonlight-preempt.service	先 disable --now 旧 unit，再 enable 新 unit
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/nvenc-prep.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-nvenc-prep.conf	不删会让同一个 ExecStartPre 跑两遍（新旧名并存）
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/override.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-override.conf	内容相同的旧名 drop-in
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/session-wait.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-session-wait.conf	不删会让同一个 ExecStartPre 跑两遍（新旧名并存）
+~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/startup-watchdog.conf	sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/rakkord-startup-watchdog.conf	不删会让同一个 ExecStartPost 跑两遍（新旧名并存）
+~/.local/libexec/sunshine-nvenc-prep.sh	sunshine/libexec/rakkord-sunshine-nvenc-prep.sh	旧 drop-in 删掉、daemon-reload 后再删
+~/.local/libexec/sunshine-port-wait.sh	sunshine/libexec/rakkord-sunshine-port-wait.sh	旧 drop-in 删掉、daemon-reload 后再删
+~/.local/libexec/sunshine-session-wait.sh	sunshine/libexec/rakkord-sunshine-session-wait.sh	旧 drop-in 删掉、daemon-reload 后再删
+~/.local/bin/sunshine-session-prep	sunshine/libexec/rakkord-sunshine-session-prep	sunshine.conf 的 global_prep_cmd 换成新路径并重启 Sunshine 后再删
+~/.local/bin/selkies-preempts-moonlight	sunshine/libexec/rakkord-moonlight-preempt	旧 unit 停掉后再删
+~/.local/bin/sunshine-input-bridge	sunshine/input-bridge	旧 unit 停掉后再删（二进制，新产物是 ~/.local/libexec/rakkord-sunshine-input-bridge）
+/etc/udev/rules.d/70-sunshine-input-rakko.rules	system/udev/70-rakkord-uinput.rules	root；新规则装好后删旧的，再 udevadm control --reload
+~/.local/share/applications/sunshine-input-bridge.desktop	sunshine/desktop/rakkord-sunshine-input-bridge.desktop	授权旧路径 ~/.local/bin/sunshine-input-bridge 的 fake_input；新 .desktop 装好、kbuildsycoca6 后再删

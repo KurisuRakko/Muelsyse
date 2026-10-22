@@ -46,6 +46,7 @@ import gzip
 import hmac
 import json
 import logging
+import math
 import os
 import struct
 import time
@@ -53,7 +54,7 @@ from collections import OrderedDict, deque
 from datetime import datetime
 from enum import Enum
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Optional, Tuple, Union
+from typing import Any, Awaitable, Callable, List, Optional, Tuple, Union
 
 try:
     import fcntl
@@ -95,6 +96,8 @@ from .display_utils import (
 )
 from .input_handler import (
     BULK_DRAIN_TIMEOUT_S,
+    PERF_INPUT,
+    RAKKORD_PERF,
     WebRTCInput as InputHandler,
     CLIPBOARD_CHUNK_SIZE,
     gamepad_slot_denied,
@@ -103,8 +106,10 @@ from .input_handler import (
     VIEWER_SILENT_DROP_PREFIXES,
 )
 from .host_cursor import HostCursorController
+from .ime_caret import ImeCaretRelay
 from .settings import settings, SETTING_DEFINITIONS, WS_MAX_MESSAGE_BYTES, WS_MESSAGE_SIZE_HARD_CAP, build_client_settings_payload, effective_use_cpu, inflate_gz_bounded, pipeline_starts_on, sanitize_client_setting
 from .settings import settings as app_settings
+from .adaptive_bitrate import AdaptiveBitrateController
 from .webcam import (
     MSG_WEBCAM_DISABLED,
     MSG_WEBCAM_KEYFRAME,
@@ -182,7 +187,7 @@ TARGET_FRAMERATE = 60
 # Secure mode: the messages only the input-authority holder may send. A set, and
 # built once, because the check runs per client message.
 SECURE_INPUT_PREFIXES = frozenset((
-    "kd", "ku", "kh", "kr", "m", "m2", "co", "cmd",
+    "kd", "ku", "kh", "kr", "m", "m2", "ws", "t", "co", "cmd",
     "cws", "cbs", "cwd", "cbd", "cwe", "cbe", "cw", "cb",
     "REQUEST_CLIPBOARD",
 ))
@@ -636,6 +641,160 @@ async def _broadcast_to_clients(
     return closed_clients
 
 
+class _PerfDisplayWindow:
+    """一个显示器一秒内的视频计量（`RAKKORD_PERF` 打开时才有实例），只在事件循环上读写。
+
+    帧数都按逻辑帧计（frame_id 变化才加一），一帧的多条 stripe 只算一次；
+    字节数按 chunk 实际大小累加。
+
+    Attributes:
+        rx: do_fanout 收到的逻辑帧数；rx_bytes 是对应 chunk 字节。
+        hop_ms_max: pixelflux 回调线程到 do_fanout 在循环上执行的最大延迟。
+        gated: ACK backpressure 生效时没有 offer 给受控端 relay 的逻辑帧数。
+        sent: 所有 relay 由 `ws.send_bytes` 成功发出的逻辑帧数；sent_bytes 同口径。
+        relay_drop: 所有 relay 在 `offer` 里丢掉的逻辑帧数（三处丢帧合计）。
+        send_ms_max: 单次 `await ws.send_bytes` 的最大耗时。
+    """
+
+    __slots__ = ('rx', 'rx_bytes', 'hop_ms_max', 'gated', 'sent', 'sent_bytes',
+                 'relay_drop', 'send_ms_max', '_rx_fid', '_gated_fid')
+
+    def __init__(self) -> None:
+        self._rx_fid: Optional[int] = None
+        self._gated_fid: Optional[int] = None
+        self.reset()
+
+    def reset(self) -> None:
+        self.rx = 0
+        self.rx_bytes = 0
+        self.hop_ms_max: Optional[float] = None
+        self.gated = 0
+        self.sent = 0
+        self.sent_bytes = 0
+        self.relay_drop = 0
+        self.send_ms_max: Optional[float] = None
+
+    def is_idle(self) -> bool:
+        return not (self.rx or self.gated or self.sent or self.relay_drop)
+
+    def note_rx(self, frame_id: int, size: int, hop_ms: Optional[float]) -> None:
+        if frame_id != self._rx_fid:
+            self._rx_fid = frame_id
+            self.rx += 1
+        self.rx_bytes += size
+        if hop_ms is not None and (self.hop_ms_max is None or hop_ms > self.hop_ms_max):
+            self.hop_ms_max = hop_ms
+
+    def note_gated(self, frame_id: int) -> None:
+        if frame_id != self._gated_fid:
+            self._gated_fid = frame_id
+            self.gated += 1
+
+    def note_send(self, new_frame: bool, size: int, send_ms: float) -> None:
+        if new_frame:
+            self.sent += 1
+        self.sent_bytes += size
+        if self.send_ms_max is None or send_ms > self.send_ms_max:
+            self.send_ms_max = send_ms
+
+
+_PERF_DISPLAYS: dict = {}
+# 探针 sleep 的名义时长；超出部分即事件循环没能按时调度它的延迟。
+_PERF_LOOP_PROBE_SECONDS = 0.005
+_perf_loop_lag_ms_max: Optional[float] = None
+
+
+def _perf_display(display_id: str) -> _PerfDisplayWindow:
+    window = _PERF_DISPLAYS.get(display_id)
+    if window is None:
+        window = _PERF_DISPLAYS[display_id] = _PerfDisplayWindow()
+    return window
+
+
+def _perf_ms(value: Optional[float]) -> str:
+    """一位小数的毫秒值，无样本写 `-`。"""
+    return '-' if value is None else f"{value:.1f}"
+
+
+def _perf_triplet(samples: List[float]) -> str:
+    """样本的 p50/p95/max（最近秩法，一位小数，`a/b/c`），无样本写 `-`。"""
+    if not samples:
+        return '-'
+    ordered = sorted(samples)
+    n = len(ordered)
+
+    def rank(p: float) -> float:
+        return ordered[max(0, math.ceil(p * n) - 1)]
+
+    return f"{rank(0.50):.1f}/{rank(0.95):.1f}/{ordered[-1]:.1f}"
+
+
+def _perf_report_lines(now_ms: int) -> List[str]:
+    """取走这一秒的全部计量窗口，返回要打印的 RD_PERF_SRV 行。
+
+    每个有活动的显示器一行；输入不分显示器，`in_m`/`in_iv` 只在 primary 行，
+    这一秒只有输入时也照样打印 primary 行。事件循环是共享的，
+    `loop_lag_ms_max` 每行都带同一个值，单独的卡顿不触发打印。
+    """
+    global _perf_loop_lag_ms_max
+    lag = _perf_loop_lag_ms_max
+    _perf_loop_lag_ms_max = None
+    in_m, in_iv = PERF_INPUT.take()
+    display_ids = [did for did, w in _PERF_DISPLAYS.items() if not w.is_idle()]
+    if in_m and 'primary' not in display_ids:
+        display_ids.append('primary')
+    display_ids.sort(key=lambda did: (did != 'primary', did))
+    lines = []
+    for did in display_ids:
+        w = _perf_display(did)
+        primary = did == 'primary'
+        lines.append(
+            f"RD_PERF_SRV t={now_ms} disp={did} rx={w.rx} rx_kb={round(w.rx_bytes / 1024)} "
+            f"hop_ms_max={_perf_ms(w.hop_ms_max)} gated={w.gated} sent={w.sent} "
+            f"sent_kb={round(w.sent_bytes / 1024)} relay_drop={w.relay_drop} "
+            f"send_ms_max={_perf_ms(w.send_ms_max)} "
+            f"in_m={in_m if primary else 0} in_iv={_perf_triplet(in_iv) if primary else '-'} "
+            f"loop_lag_ms_max={_perf_ms(lag)}")
+    for w in _PERF_DISPLAYS.values():
+        w.reset()
+    return lines
+
+
+async def _perf_report_loop() -> None:
+    """每秒打印一次 RD_PERF_SRV 行，全 0 的秒不打印。"""
+    while True:
+        await asyncio.sleep(1.0)
+        for line in _perf_report_lines(int(time.time() * 1000)):
+            data_logger.info(line)
+
+
+async def _perf_loop_probe() -> None:
+    """反复 sleep 5ms，记录每次超时唤醒的最大超出量，衡量事件循环卡顿。"""
+    global _perf_loop_lag_ms_max
+    while True:
+        t0 = time.monotonic()
+        await asyncio.sleep(_PERF_LOOP_PROBE_SECONDS)
+        lag_ms = (time.monotonic() - t0 - _PERF_LOOP_PROBE_SECONDS) * 1000.0
+        if lag_ms < 0.0:
+            lag_ms = 0.0
+        if _perf_loop_lag_ms_max is None or lag_ms > _perf_loop_lag_ms_max:
+            _perf_loop_lag_ms_max = lag_ms
+
+
+def _perf_client_line(message: str, peer: Any, now_ms: int) -> str:
+    """把客户端的 `RD_PERF_CLIENT <json>` 转成日志行；JSON 原样，截到 4KB。
+
+    换行换成空格：一条上报在 journal 里必须仍是一行，脚本才能逐行解析。
+    """
+    body = message[len("RD_PERF_CLIENT"):]
+    if body.startswith(" "):
+        body = body[1:]
+    body = body[:4096].replace("\r", " ").replace("\n", " ")
+    if isinstance(peer, (tuple, list)) and len(peer) >= 2:
+        peer = f"{peer[0]}:{peer[1]}"
+    return f"RD_PERF_CLIENT t={now_ms} peer={peer} {body}"
+
+
 def _is_h264_chunk(data) -> bool:
     """Wire 首字节 0x04 即 H.264 stripe（帧格式见 `_VideoRelay` 文档）。"""
     return len(data) >= 10 and data[0] == 0x04
@@ -689,7 +848,8 @@ class _VideoRelay:
                  'adaptive_drop_enter_samples', 'adaptive_drop_exit_samples',
                  'adaptive_drop_dropped_frames', 'adaptive_drop_sent_frames',
                  'adaptive_drop_last_log', 'adaptive_drop_queue_age_ms',
-                 'adaptive_drop_desync_frames', 'adaptive_drop_reason')
+                 'adaptive_drop_desync_frames', 'adaptive_drop_reason',
+                 '_perf_drop_fid')
 
     def __init__(self, server: "DataStreamingServer", display_id: str,
                  ws: web.WebSocketResponse, budget: int) -> None:
@@ -717,6 +877,8 @@ class _VideoRelay:
         self.adaptive_drop_queue_age_ms = 0.0
         self.adaptive_drop_desync_frames = 0.0
         self.adaptive_drop_reason = 'initializing'
+        # RAKKORD_PERF：一帧的多条 stripe 被逐条拦下时 relay_drop 只记一次。
+        self._perf_drop_fid: Optional[int] = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(
@@ -834,11 +996,18 @@ class _VideoRelay:
         is_h264 = _is_h264_chunk(data)
         is_idr = is_h264 and data[1] == 0x01
         dropped = False
+        if RAKKORD_PERF:
+            perf = _perf_display(self.display_id)
+            pruned_before = self.adaptive_drop_dropped_frames
         if self.adaptive_active() and self._adaptive_prune(item['frame_id']):
             # 新到的 IDR 本身就是恢复点，跳到它不需要再请求一次同步。
             dropped = not is_idr
+            if RAKKORD_PERF:
+                perf.relay_drop += self.adaptive_drop_dropped_frames - pruned_before
         if (not is_idr and self.backlog
                 and self.backlog_bytes + size > self.budget):
+            if RAKKORD_PERF:
+                perf.relay_drop += len({entry[1]['frame_id'] for entry in self.backlog})
             self._clear_stale_backlog()
             dropped = True
         deliver = True
@@ -849,6 +1018,9 @@ class _VideoRelay:
             elif row not in self.live_rows:
                 deliver = False
                 dropped = True
+                if RAKKORD_PERF and item['frame_id'] != self._perf_drop_fid:
+                    self._perf_drop_fid = item['frame_id']
+                    perf.relay_drop += 1
         if deliver:
             self.backlog.append((time.monotonic(), item))
             self.backlog_bytes += size
@@ -868,7 +1040,8 @@ class _VideoRelay:
                 _enqueued_at, item = self.backlog.popleft()
                 data = item['data']
                 self.backlog_bytes -= len(data)
-                if item['frame_id'] != self._sending_frame_id:
+                new_frame = item['frame_id'] != self._sending_frame_id
+                if new_frame:
                     # 逻辑帧计数：同一帧的多条 stripe 只算一帧。
                     self.adaptive_drop_sent_frames += 1
                 self._sending_frame_id = item['frame_id']
@@ -879,12 +1052,20 @@ class _VideoRelay:
                     fid = item['frame_id']
                     now = time.monotonic()
                     ds['sent_timestamps'][fid] = now
+                    cum = ds.get('sent_bytes_total', 0) + len(data)
+                    ds['sent_bytes_total'] = cum
+                    sent_cum = ds.setdefault('sent_cumulative_bytes', OrderedDict())
+                    sent_cum[fid] = cum
+                    if len(sent_cum) > SENT_FRAME_TIMESTAMP_HISTORY_SIZE:
+                        sent_cum.popitem(last=False)
                     ds['last_sent_frame_id'] = fid
                     ds['has_sent_any_frame'] = True
                     if ds.get('unacked_since') is None:
                         ds['unacked_since'] = now
                     if len(ds['sent_timestamps']) > SENT_FRAME_TIMESTAMP_HISTORY_SIZE:
                         ds['sent_timestamps'].popitem(last=False)
+                if RAKKORD_PERF:
+                    send_started = time.monotonic()
                 try:
                     await asyncio.wait_for(
                         self.ws.send_bytes(data),
@@ -901,6 +1082,9 @@ class _VideoRelay:
                 except (ConnectionResetError, OSError, RuntimeError):
                     self.server.clients.discard(self.ws)
                     return
+                if RAKKORD_PERF:
+                    _perf_display(self.display_id).note_send(
+                        new_frame, len(data), (time.monotonic() - send_started) * 1000.0)
                 self.server._bytes_sent_in_interval += len(data)
         finally:
             group = self.server.video_relay_groups.get(self.display_id)
@@ -1228,6 +1412,7 @@ class DataStreamingServer(BaseStreamingService):
         self.is_secure_mode = False
         self.input_handler = None
         self._tasks_to_run = []
+        self.ime_caret_relay = ImeCaretRelay(self._broadcast_ime_caret)
         self.RECONNECT_DEBOUNCE_MS = 500
         self.RECONNECT_GRACE_S = 3.0
         self._display_teardown_tasks = set()
@@ -1683,10 +1868,32 @@ class DataStreamingServer(BaseStreamingService):
         layout = self.display_layouts.get(display_id)
         if layout is None:
             return
+        data_logger.info(f"Applied rate-control via '_rc': {sanitized} for '{display_id}'. Restarting its capture stream.")
+        await self._restart_display_capture(display_id, "Rate-control", broadcast=True)
+
+    async def _restart_display_capture(self, display_id: str, reason: str,
+                                       broadcast: bool = False) -> None:
+        """Rebuild one display's capture for a structural encoder change.
+
+        Rate-control mode is fixed when the encoder session opens, so a switch
+        between constant quality and constant bitrate restarts the capture at
+        the display's current layout, re-arms its backpressure loop and asks
+        for the keyframe the new session opens on. A restart that leaves no
+        live module falls back to a full layout reconfiguration.
+
+        Args:
+            display_id: The display to restart.
+            reason: What asked for it, for the log.
+            broadcast: Re-announce server settings afterwards (a user-visible
+                setting changed).
+        """
+        display_state = self.display_clients.get(display_id)
+        layout = self.display_layouts.get(display_id)
+        if display_state is None or layout is None:
+            return
         restart_ok = False
         async with self._reconfigure_guard():
             if display_state.get('video_active', True):
-                data_logger.info(f"Applied rate-control via '_rc': {sanitized} for '{display_id}'. Restarting its capture stream.")
                 await self._stop_capture_for_display(display_id)
                 await self._start_capture_for_display(
                     display_id=display_id,
@@ -1695,12 +1902,15 @@ class DataStreamingServer(BaseStreamingService):
                 )
                 await self._start_backpressure_task_if_needed(display_id)
                 self._schedule_idr_for_display(display_id)
-                await self._broadcast_live_server_settings(display_id)
+                if broadcast:
+                    await self._broadcast_live_server_settings(display_id)
                 if IS_WAYLAND:
                     await self._sync_wayland_realized_geometry(display_id)
                 restart_ok = self._opcode_display_module(display_id) is not None
+            else:
+                return
         if not restart_ok:
-            data_logger.warning(f"Rate-control restart failed for '{display_id}'; falling back to full reconfiguration.")
+            data_logger.warning(f"{reason} restart failed for '{display_id}'; falling back to full reconfiguration.")
             await self.reconfigure_displays()
 
     async def _handle_opcode_crf(self, crf: Any, display_id: str = 'primary') -> None:
@@ -1806,6 +2016,20 @@ class DataStreamingServer(BaseStreamingService):
             self.app.last_cursor_sent = cursor_data
 
         return self.app.last_cursor_sent
+
+    async def _broadcast_ime_caret(self, message: str) -> None:
+        """Send an `ime_caret` message to the primary display's pages.
+
+        The caret is in the primary frame's pixels, so a secondary display's
+        page has no use for it.
+        """
+        secondary = {
+            info.get('ws') for did, info in self.display_clients.items()
+            if did != 'primary' and info.get('ws')
+        }
+        targets = self.clients - secondary
+        if targets:
+            await _broadcast_to_clients(targets, message, per_client_timeout=2.0)
 
     async def send_current_cursor(self, websocket: web.WebSocketResponse, raddr: Any) -> None:
         """Send the current cursor image to one client (used at connect/resume)."""
@@ -2192,6 +2416,7 @@ class DataStreamingServer(BaseStreamingService):
         sent_ts = display_state.get('sent_timestamps')
         if sent_ts is not None:
             sent_ts.clear()
+        display_state.pop('sent_cumulative_bytes', None)
         rtt_samples = display_state.get('rtt_samples')
         if rtt_samples is not None:
             rtt_samples.clear()
@@ -2516,6 +2741,8 @@ class DataStreamingServer(BaseStreamingService):
         installed = self.input_handler.installed_apps() if self.input_handler else None
         if installed is not None:
             payload['apps_installed'] = {"value": installed}
+        native_touch = bool(self.input_handler and self.input_handler.native_touch_available())
+        payload['native_touch'] = {"value": native_touch, "locked": True}
         return payload
 
     async def _broadcast_live_server_settings(self, display_id: str) -> None:
@@ -2534,11 +2761,14 @@ class DataStreamingServer(BaseStreamingService):
 
             def message_for(did):
                 if did not in messages:
-                    messages[did] = json.dumps({
+                    payload = {
                         "type": "server_settings",
                         "displayId": did,
                         "settings": self._settings_payload_for_display(did),
-                    })
+                    }
+                    if RAKKORD_PERF:
+                        payload["rakkord_perf"] = True
+                    messages[did] = json.dumps(payload)
                 return messages[did]
 
             per_socket = {}
@@ -2676,6 +2906,87 @@ class DataStreamingServer(BaseStreamingService):
             "queue_ms": round(max((r.queue_age_ms() for r in relays), default=0.0), 1),
         }
 
+    def _rate_controller(self, display_state: dict) -> Optional[AdaptiveBitrateController]:
+        """The display's bitrate controller, created on first use; None when off.
+
+        Off when the operator disabled `adaptive_bitrate` or the display runs
+        the JPEG encoder, which has no bitrate to steer. A controller built for
+        the other rate-control mode than the display now has is replaced, so a
+        user switching to or from constant bitrate gets the matching behaviour.
+        """
+        enabled, _ = self.cli_args.adaptive_bitrate
+        if not enabled or display_state.get('encoder', self.app.encoder) == 'jpeg':
+            return None
+        user_cbr = display_state.get('rate_control_mode', self.rc_mode.value) == 'cbr'
+        ctl = display_state.get('rate_controller')
+        if ctl is None or ctl.user_cbr != user_cbr:
+            ctl = AdaptiveBitrateController(user_cbr=user_cbr)
+            display_state['rate_controller'] = ctl
+            # A bitrate the old controller left would otherwise stay applied:
+            # the new one starts at the ceiling and sees nothing to change.
+            display_state['adaptive_bitrate_kbps'] = None
+        return ctl
+
+    def _feed_rate_controller(self, display_state: dict, acked_frame_id: int,
+                              rtt_sample_ms: float) -> None:
+        """Hand one ack's round trip and the stream bytes up to its frame to
+        the display's bitrate controller."""
+        ctl = self._rate_controller(display_state)
+        if ctl is None:
+            return
+        now = time.monotonic()
+        ctl.on_rtt(rtt_sample_ms, now)
+        cum = (display_state.get('sent_cumulative_bytes') or {}).pop(acked_frame_id, None)
+        if cum is not None:
+            ctl.on_delivered(cum, now)
+
+    async def _step_rate_controller(self, display_id: str, display_state: dict) -> None:
+        """Tick the display's bitrate controller and apply what it decides.
+
+        A retarget goes to the running encoder live. Entering or leaving
+        constant bitrate rebuilds the capture, which restarts this very
+        backpressure loop, so the switch runs as its own task and a pending
+        one makes later ticks wait (`rate_switch_task`).
+        """
+        ctl = self._rate_controller(display_state)
+        if ctl is None:
+            return
+        pending = display_state.get('rate_switch_task')
+        if pending is not None and not pending.done():
+            return
+        ceiling = float(display_state.get('video_bitrate') or self._initial_video_bitrate or 8000)
+        decision = ctl.tick(time.monotonic(), ceiling)
+        now = time.monotonic()
+        if ctl.mode == 'adaptive' and now - display_state.get('rate_log_at', 0.0) >= 10.0:
+            display_state['rate_log_at'] = now
+            goodput = ctl.goodput_kbps()
+            data_logger.info(
+                f"Adaptive bitrate '{display_id}': {ctl.applied_kbps} kbps, "
+                f"queue {ctl.queue_ms if ctl.queue_ms is None else round(ctl.queue_ms)} ms, "
+                f"goodput {0 if goodput is None else round(goodput)} kbps.")
+        if decision is None:
+            return
+        action = decision['action']
+        data_logger.info(
+            f"Adaptive bitrate '{display_id}': {action}"
+            f"{' ' + str(decision['kbps']) + ' kbps' if 'kbps' in decision else ''} ({decision['reason']}).")
+        if action == 'rebase':
+            return
+        if action == 'set':
+            display_state['adaptive_bitrate_kbps'] = int(decision['kbps'])
+            module = self._opcode_display_module(display_id)
+            if module is not None:
+                try:
+                    module.update_video_bitrate(int(decision['kbps']))
+                    self._track_capture_settings(display_id, video_bitrate_kbps=int(decision['kbps']))
+                except Exception as e:
+                    data_logger.warning(f"Adaptive bitrate update failed for '{display_id}' ({e}).")
+            return
+        display_state['adaptive_bitrate_kbps'] = int(decision['kbps']) if action == 'enter' else None
+        display_state['rate_switch_task'] = asyncio.create_task(
+            self._restart_display_capture(display_id, "Adaptive bitrate"),
+            name=f"AdaptiveRateSwitch:{display_id}")
+
     async def _run_frame_backpressure_logic(self, display_id: str) -> None:
         """The core backpressure and latency calculation loop for a single display.
 
@@ -2805,6 +3116,7 @@ class DataStreamingServer(BaseStreamingService):
                     self._set_backpressure_enabled(display_id, display_state, True)
                 self._update_adaptive_relays(
                     display_id, display_state, effective_desync_frames, client_fps, True)
+                await self._step_rate_controller(display_id, display_state)
 
         except asyncio.CancelledError:
             data_logger.info(f"Backpressure logic task for '{display_id}' cancelled.")
@@ -3197,12 +3509,35 @@ class DataStreamingServer(BaseStreamingService):
                         target_w = max(1, min(target_w, 7680))
                     if isinstance(target_h, int):
                         target_h = max(1, min(target_h, 4320))
+                    # 0/1 不是"要 0 像素"，而是"客户端还没给出可用尺寸"：隐藏的标签页或
+                    # 尚未完成布局的页面会上报 rect.width/height == 0，而 1 在下面的奇偶
+                    # 对齐里又会变成 0。拿它去重设输出会让 reconfigure 以
+                    # "Calculated total display size is zero. Aborting reconfiguration."
+                    # 中止（随后还按 1024x768 兜底再重设一次），用户看到的就是连接瞬间
+                    # 的抽动。这里按"沿用当前几何"处理，与 server 关闭动态分辨率时同路。
+                    if not isinstance(target_w, int) or target_w < 2 \
+                            or not isinstance(target_h, int) or target_h < 2:
+                        keeps_current_geometry = True
+                        current = await self._current_primary_geometry()
+                        if current is not None:
+                            target_w, target_h = current
+                        data_logger.info(
+                            f"Initial client size {settings.get('initialClientWidth')}x"
+                            f"{settings.get('initialClientHeight')} is unusable; keeping the "
+                            f"desktop at {current or 'its current size'}."
+                        )
                 if not isinstance(target_w, int) or target_w <= 0:
                     target_w = old_display_width if old_display_width > 0 else 1024
                 if not isinstance(target_h, int) or target_h <= 0:
                     target_h = old_display_height if old_display_height > 0 else 768
                 if target_w % 2 != 0: target_w -= 1
                 if target_h % 2 != 0: target_h -= 1
+                # 奇偶对齐在 >=1 夹取之后执行，仍可能把 1 落到 0；再兜一次底，保证
+                # display_state 里永远不会写出 0 边长（那会让整段 reconfigure 中止）。
+                if target_w < 2:
+                    target_w = old_display_width if old_display_width >= 2 else 1024
+                if target_h < 2:
+                    target_h = old_display_height if old_display_height >= 2 else 768
                 if settings.get("force_aligned_resolution") is not None:
                     display_state["force_aligned_resolution"] = sanitize_value(
                         "force_aligned_resolution", settings.get("force_aligned_resolution")
@@ -3645,6 +3980,10 @@ class DataStreamingServer(BaseStreamingService):
             pass
 
         await self.send_current_cursor(websocket, raddr)
+        try:
+            await websocket.send_str(self.ime_caret_relay.latest)
+        except (ConnectionResetError, OSError, RuntimeError):
+            pass
 
         # Which display this socket renders is only known from its first SETTINGS;
         # the primary's live encoder is what a viewer renders and a later display seeds from.
@@ -3653,6 +3992,9 @@ class DataStreamingServer(BaseStreamingService):
             "type": "server_settings",
             "settings": self._settings_payload_for_display('primary'),
         }
+        if RAKKORD_PERF:
+            # Tells the page to start its own per-second RD_PERF_CLIENT reports.
+            server_settings_payload["rakkord_perf"] = True
         try:
             await websocket.send_str(json.dumps(server_settings_payload))
         except (ConnectionResetError, OSError, RuntimeError):
@@ -3929,6 +4271,13 @@ class DataStreamingServer(BaseStreamingService):
                         except Exception:
                             pass
                         continue
+                    if message.startswith("RD_PERF_CLIENT"):
+                        # Ahead of the viewer gate: a viewer's page reports too, and
+                        # nothing here acts on the session. Off, it is dropped silently.
+                        if RAKKORD_PERF:
+                            data_logger.info(_perf_client_line(
+                                message, raddr, int(time.time() * 1000)))
+                        continue
                     perms = client_permissions.get(websocket)
                     if perms and perms.get("role") == "viewer":
                         # Authority lists shared with the WebRTC gate: the collab extras
@@ -4106,8 +4455,12 @@ class DataStreamingServer(BaseStreamingService):
                                 display_state['unacked_since'] = None
                                 display_state['stall_gated_at'] = None
                                 display_state['sent_timestamps'].clear()
+                                display_state.pop('sent_cumulative_bytes', None)
                                 display_state['rtt_samples'].clear()
                                 display_state['smoothed_rtt'] = 0.0
+                                rate_ctl = display_state.get('rate_controller')
+                                if rate_ctl is not None:
+                                    rate_ctl.reset_path()
                                 # A warm takeover keeps the capture; no reconfigure runs when
                                 # the dimensions are unchanged, so the reset and IDR go here.
                                 try:
@@ -4193,6 +4546,8 @@ class DataStreamingServer(BaseStreamingService):
                                     # An id collision (uint16, reset on restarts) is not a
                                     # round trip.
                                     if 0 <= rtt_sample_ms <= RTT_SAMPLE_SANE_MAX_MS:
+                                        self._feed_rate_controller(
+                                            display_state, acked_frame_id, rtt_sample_ms)
                                         rtt_samples = display_state.get('rtt_samples')
                                         if rtt_samples is not None:
                                             rtt_samples.append(rtt_sample_ms)
@@ -4374,6 +4729,11 @@ class DataStreamingServer(BaseStreamingService):
                                 continue
                             self.last_viewer_keyframe_request_times[websocket] = now
                         target_display_id = client_display_id or 'primary'
+                        # Ahead of the IDR throttle: a throttled request is still
+                        # a client resyncing.
+                        rate_ctl = (self.display_clients.get(target_display_id) or {}).get('rate_controller')
+                        if rate_ctl is not None:
+                            rate_ctl.on_client_resync(time.monotonic())
                         instance = self.capture_instances.get(target_display_id)
                         module = instance.get('module') if instance else None
                         if module:
@@ -4504,6 +4864,8 @@ class DataStreamingServer(BaseStreamingService):
                     await self.input_handler.release_gamepads_for_conn(id(websocket))
                 except Exception as e:
                     data_logger.warning(f"Gamepad release on disconnect failed: {e}")
+            if self.input_handler and hasattr(self.input_handler, "release_touches"):
+                self.input_handler.release_touches(id(websocket))
 
             # The release rule is in the docstring: primary owner, or last input-capable client.
             _primary_entry = self.display_clients.get('primary')
@@ -5722,9 +6084,15 @@ class DataStreamingServer(BaseStreamingService):
                             # Only the low 16 bits go on the wire and come back in
                             # ACKs; masked here so RTT lookups match past frame 65535.
                             'frame_id': frame.frame_id & 0xFFFF}
+                    # Stamped on the deliver thread: the hop to the loop is what it measures.
+                    delivered_at = time.monotonic() if RAKKORD_PERF else 0.0
 
                     def do_fanout():
                         """Offer the chunk to each target socket's relay, on the loop."""
+                        if RAKKORD_PERF:
+                            perf = _perf_display(display_id)
+                            perf.note_rx(item['frame_id'], len(item['data']),
+                                         (time.monotonic() - delivered_at) * 1000.0)
                         group = self.video_relay_groups.get(display_id)
                         # No group means the capture is stopping; the buffer frees with the frame.
                         if group is None:
@@ -5746,6 +6114,8 @@ class DataStreamingServer(BaseStreamingService):
                                 # ACK backpressure throttles the controller only; its relay
                                 # stays warm but gated, resuming at the IDR the lift requests.
                                 targets.discard(pc_ws)
+                                if RAKKORD_PERF:
+                                    perf.note_gated(item['frame_id'])
                                 relay = group.get(pc_ws)
                                 if relay is not None:
                                     relay.flush_for_gate()
@@ -5757,6 +6127,8 @@ class DataStreamingServer(BaseStreamingService):
                                 targets = {ws}
                             else:
                                 targets = set()
+                                if RAKKORD_PERF and ws is not None:
+                                    perf.note_gated(item['frame_id'])
                                 relay = group.get(ws) if ws is not None else None
                                 if relay is not None:
                                     relay.flush_for_gate()
@@ -5946,8 +6318,12 @@ class DataStreamingServer(BaseStreamingService):
             encoder=encoder,
             use_cpu=display_state.get(
                 'use_cpu', effective_use_cpu(encoder, None, self._initial_use_cpu)),
-            cbr=display_state.get('rate_control_mode', self.rc_mode.value) == 'cbr',
-            bitrate_kbps=display_state.get('video_bitrate', self._initial_video_bitrate),
+            cbr=(display_state.get('rate_control_mode', self.rc_mode.value) == 'cbr'
+                 or bool(display_state.get('adaptive_bitrate_kbps'))),
+            bitrate_kbps=(display_state.get('adaptive_bitrate_kbps')
+                          or display_state.get('video_bitrate', self._initial_video_bitrate)),
+            vbr=(bool(display_state.get('adaptive_bitrate_kbps'))
+                 and display_state.get('rate_control_mode', self.rc_mode.value) != 'cbr'),
             crf=display_state.get('video_crf', self._initial_video_crf),
             paintover_crf=display_state.get('video_paintover_crf', self._initial_video_paintover_crf),
             paintover_burst=display_state.get('video_paintover_burst_frames', self._initial_video_paintover_burst_frames),
@@ -5985,6 +6361,15 @@ class DataStreamingServer(BaseStreamingService):
             self._tasks_to_run.append(
                 asyncio.create_task(self.input_handler.probe_apps_runner(), name="AppsProbe")
             )
+        self._tasks_to_run.append(
+            asyncio.create_task(self.ime_caret_relay.run(), name="ImeCaretRelay")
+        )
+        if RAKKORD_PERF:
+            logger.info("RAKKORD_PERF on: logging RD_PERF_SRV lines every second.")
+            self._tasks_to_run.append(
+                asyncio.create_task(_perf_report_loop(), name="PerfReport"))
+            self._tasks_to_run.append(
+                asyncio.create_task(_perf_loop_probe(), name="PerfLoopProbe"))
 
         # 96 is unity: no churn when nothing diverges.
         startup_dpi = int(float(getattr(settings, "scaling_dpi", "96") or 96))
