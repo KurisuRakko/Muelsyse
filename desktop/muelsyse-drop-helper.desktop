@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Muelsyse Drop Helper
+Comment=Grants org_kde_kwin_fake_input to the drag-and-drop helper used for browser file drops
+Exec=@HOME@/.local/libexec/muelsyse-drop-helper
+X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input
+NoDisplay=true

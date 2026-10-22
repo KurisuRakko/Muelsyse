@@ -190,6 +190,12 @@ SETTING_DEFINITIONS: List[Dict[str, Any]] = [
         "help": 'Allowed file transfer directions (comma-separated: "upload,download"). Set to "" or "none" to disable.',
     },
     {
+        "name": "drop_helper",
+        "type": "str",
+        "default": "",
+        "help": "Executable that places drag-dropped uploads where they were dropped (\"~\" expands). Invoked as `HELPER X Y PATH...` with frame-buffer pixel coordinates; exit 0 means the drop target accepted the files, anything else moves them into file_manager_path instead. Empty (the default) keeps every drop a plain upload into file_manager_path.",
+    },
+    {
         "name": "file_transfer_limit_mbps",
         "type": "float",
         "default": 0.0,
@@ -1259,6 +1265,7 @@ class AppSettings:
     subfolder: str
     video_bitrate: tuple[float, float]
     file_transfer_limit_mbps: float
+    drop_helper: str
 
     def __init__(self, setting: List[Dict[str, Any]]) -> None:
         """Parse the command line and environment against `setting`.
@@ -1830,6 +1837,7 @@ CLIENT_PAYLOAD_EXCLUDED = [
     'webcam_socket_path', 'webcam_device',
     'uinput_mouse_socket', 'webrtc_statistics_dir', 'computer_use_bind',
     'wayland_host_display', 'wayland_host_backend', 'app_wayland_display',
+    'drop_helper',
 ]
 
 
@@ -1873,7 +1881,9 @@ def build_client_settings_payload() -> Dict[str, Dict[str, Any]]:
     Adds the clipboard gate booleans derived from the single
     `enable_clipboard` policy and the pixelflux build's
     `software_h264_encoder` ("x264" or "openh264"), which the dashboards'
-    rate-control default reads.
+    rate-control default reads, and `drop_helper_enabled`, which tells the
+    client to send drag-drops for placement instead of the server-local
+    helper path itself.
     """
     out = {}
     for setting_def in SETTING_DEFINITIONS:
@@ -1906,6 +1916,7 @@ def build_client_settings_payload() -> Dict[str, Dict[str, Any]]:
     out['clipboard_in_enabled'] = {'value': clip in ('true', 'in')}
     out['clipboard_out_enabled'] = {'value': clip in ('true', 'out')}
     out['software_h264_encoder'] = {'value': software_h264_encoder()}
+    out['drop_helper_enabled'] = {'value': bool(settings.drop_helper)}
     return out
 
 

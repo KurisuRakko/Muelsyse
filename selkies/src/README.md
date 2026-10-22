@@ -195,6 +195,7 @@ The table below lists all available server settings.
 | `SELKIES_ENABLE_CLIPBOARD` | `--enable-clipboard` | `'true'` | Clipboard policy for both transports: `true` (both directions), `in` (client-to-server only), `out` (server-to-client only), `false` (disabled). |
 | `SELKIES_COMMAND_ENABLED` | `--command-enabled` | `False` | Enable parsing of `command` websocket messages. Disabled by default for security; opt in explicitly. |
 | `SELKIES_FILE_TRANSFERS` | `--file-transfers` | `'upload,download'` | Allowed file transfer directions (comma-separated: "upload,download"). Set to "" or "none" to disable. |
+| `SELKIES_DROP_HELPER` | `--drop-helper` | `''` | Executable that places drag-dropped uploads where they were dropped, run as `HELPER X Y PATH...` with frame-buffer coordinates. Exit 0 keeps the placement; anything else moves the files into the file-manager directory without overwriting. Empty keeps drops plain uploads. |
 | `SELKIES_FILE_TRANSFER_LIMIT_MBPS` | `--file-transfer-limit-mbps` | `0.0` | Static file-transfer throttle in Mbit/s, shared by all downloads and uploads, for links whose rate is known. 0 leaves transfers to congestion control alone: each direction backs off when the client's own session round trip inflates, taking only what the link has spare, and that gauge is end to end so it keeps working behind a reverse proxy. |
 | `SELKIES_ENCODER` | `--encoder` | `'h264enc'` | The default video encoder. |
 | `SELKIES_FRAMERATE` | `--framerate` | `'8-120'` | Allowed framerate range or a fixed value. |

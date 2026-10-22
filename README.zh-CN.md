@@ -68,6 +68,7 @@ flowchart LR
 | `scripts/`、`systemd/`、`config/`、`desktop/` | 原生主机部署：会话启动脚本、systemd unit、环境变量模板、launcher 条目、构建/部署/漂移检查脚本 | 原创 |
 | `system/` | 需要 root 的主机文件（udev 规则、nftables 片段、GPU 模式切换），按清单安装 | 原创 |
 | `sunshine/` | Sunshine/Moonlight 旁路：evdev → KWin `fake_input` 的输入桥（C）、会话准备脚本、unit | 原创 |
+| `desktop-drop/` | 精确落点拖放：把浏览器里的放下在同一位置重放成原生 Wayland 拖拽，文件落在放下的地方（C） | 原创 |
 | `deploy/manifest.tsv` | 仓库文件 → 主机路径的契约，`deploy-host.sh` 和漂移检查共用 | 原创 |
 | `deploy/remote-desktop/` | 另一种容器化部署方式（官方 Selkies 镜像，无需 KWin 补丁） | 原创 |
 | `docs/` | 设计文档、部署指南、已知限制 | 原创 |
@@ -178,6 +179,7 @@ flowchart LR
 - `selkies/` 与 `pixelflux/` — MPL-2.0（`selkies/LICENSE`、`pixelflux/LICENSE`）。
 - `sunshine/input-bridge/` — 输入桥自己的 C 源码为 MIT（每个文件有 SPDX
   标注）；旁边生成的 Wayland 协议文件沿用上游许可证。
+- `desktop-drop/` — 拖放 helper 自己的 C 源码为 MIT，安排同输入桥。
 - 其余部分，包括 `kwin-adapter/` — GPL-2.0-or-later（[`LICENSE`](LICENSE)）。
 
 完整拆解见 [`LICENSING.md`](LICENSING.md)。

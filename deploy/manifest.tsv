@@ -40,6 +40,11 @@ scripts/selkies-xwayland-listen.py	~/.local/libexec/selkies-xwayland-listen.py	0
 config/environment.d/10-remote-desktop-session.conf	~/.config/environment.d/10-remote-desktop-session.conf	0644	user	render	session
 desktop/selkies-kwin-wayland.desktop	~/.local/share/applications/selkies-kwin-wayland.desktop	0644	user	render	none
 
+# --- 浏览器文件拖放（muelsyse-drop-helper，Selkies 按次调用，无常驻进程）---
+desktop-drop	~/.local/libexec/muelsyse-drop-helper	0755	user	build	none
+# KWin 只把 fake_input 给 Exec 与 .desktop 匹配的进程；改了 .desktop 要在会话环境里 kbuildsycoca6
+desktop/muelsyse-drop-helper.desktop	~/.local/share/applications/muelsyse-drop-helper.desktop	0644	user	render	none
+
 # --- Selkies（remote-desktop-selkies）---
 systemd/remote-desktop-selkies.service	~/.config/systemd/user/remote-desktop-selkies.service	0644	user	render	selkies
 systemd/remote-desktop-selkies.service.d/dri-node.conf	~/.config/systemd/user/remote-desktop-selkies.service.d/dri-node.conf	0644	user	copy	selkies

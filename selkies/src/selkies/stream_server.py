@@ -20,6 +20,7 @@ a slow disk never stalls streaming.
 """
 
 import os
+import re
 import ssl
 import hmac
 import errno
@@ -65,6 +66,21 @@ UPLOAD_PART_TTL_SECONDS: int = 3600
 # Hidden staging sibling an upload is renamed from, so a destination is only
 # ever replaced by a complete file.
 UPLOAD_STAGING_PREFIX: str = ".selkies-upload-"
+
+# A drag-drop placed by the drop helper uploads into its own staging directory
+# first. The id the client picks names that directory, so it is held to a
+# filename-safe alphabet. A placed drop's directory carries the marker file
+# and outlives the placement by a day, since the desktop copies out of it
+# asynchronously and a large copy is slow; one never placed is handed to the
+# file-manager directory once it has sat idle for an hour.
+DROP_ID_PATTERN = re.compile(r"[A-Za-z0-9-]{1,64}")
+DROP_PLACED_MARKER: str = ".selkies-drop-placed"
+DROP_PLACED_TTL_SECONDS: int = 86400
+DROP_STAGING_TTL_SECONDS: int = 3600
+DROP_HELPER_TIMEOUT_SECONDS: float = 20.0
+# How long a timed-out helper gets after SIGTERM to release what it holds
+# before it is killed.
+DROP_HELPER_TERM_GRACE_SECONDS: float = 3.0
 
 
 class PathOnlyAccessLogger(AbstractAccessLogger):
@@ -531,6 +547,115 @@ def _carry_destination_mode(staging: str, dest: str) -> None:
         os.chmod(staging, stat.S_IMODE(st.st_mode))
     except OSError as e:
         logger.debug(f"Could not carry the mode of {dest} onto the staged upload: {e}")
+
+
+def _drop_staging_root() -> str:
+    """Return the parent of every drop's staging directory,
+    ``$XDG_CACHE_HOME/muelsyse-drop`` (``~/.cache`` when unset or relative).
+
+    Not /tmp: the helper hands these paths to the desktop, which copies out of
+    them after the helper returns, and a tmpfs cleaner must not race that.
+    """
+    cache = os.environ.get("XDG_CACHE_HOME", "")
+    if not os.path.isabs(cache):
+        cache = os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(cache, "muelsyse-drop")
+
+
+def _drop_helper_command(settings: Any) -> Optional[str]:
+    """The configured drop helper with ``~`` expanded, or None when off."""
+    helper = (getattr(settings, "drop_helper", "") or "").strip()
+    return os.path.expanduser(helper) if helper else None
+
+
+def _unclaimed_name(directory: str, name: str) -> str:
+    """Return ``name``, or ``name (1).ext``, ``name (2).ext``... — the first
+    that does not exist in ``directory``. A directory keeps its whole name as
+    the stem."""
+    if not os.path.lexists(os.path.join(directory, name)):
+        return name
+    is_dir = os.path.isdir(os.path.join(directory, name))
+    stem, ext = (name, "") if is_dir else os.path.splitext(name)
+    n = 1
+    while True:
+        candidate = f"{stem} ({n}){ext}"
+        if not os.path.lexists(os.path.join(directory, candidate)):
+            return candidate
+        n += 1
+
+
+def _tree_mtime(path: str) -> float:
+    """The newest mtime of ``path`` or anything beneath it (symlinks not
+    followed), so a write deep inside a staged folder counts as activity."""
+    newest = os.lstat(path).st_mtime
+    for dirpath, dirnames, filenames in os.walk(path):
+        for name in dirnames + filenames:
+            try:
+                newest = max(newest, os.lstat(os.path.join(dirpath, name)).st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
+def _discard_upload_leftovers(path: str) -> None:
+    """Remove the hidden staging files of uploads that never finished
+    anywhere under ``path``; only called once nothing is writing there."""
+    for dirpath, _, filenames in os.walk(path):
+        for name in filenames:
+            if name.startswith(UPLOAD_STAGING_PREFIX):
+                try:
+                    os.remove(os.path.join(dirpath, name))
+                except OSError:
+                    pass
+
+
+def _touch(path: str) -> None:
+    """Create ``path`` empty, or refresh its mtime when it exists."""
+    with open(path, "a"):
+        pass
+    os.utime(path)
+
+
+async def _run_drop_helper(argv: List[str]) -> Tuple[Optional[int], str]:
+    """Run the drop helper and collect its exit status and stderr.
+
+    A helper still running after DROP_HELPER_TIMEOUT_SECONDS is sent SIGTERM
+    first, so it can release the button and modifier it holds on the
+    desktop, and SIGKILL only if it is still there
+    DROP_HELPER_TERM_GRACE_SECONDS later.
+
+    Returns:
+        The exit status, or None when the helper could not run or timed out,
+        and its stderr (or what went wrong).
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as e:
+        return None, f"could not run helper: {e}"
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), DROP_HELPER_TIMEOUT_SECONDS)
+        return proc.returncode, stderr.decode("utf-8", "replace")
+    except asyncio.TimeoutError:
+        pass
+    ending = "terminated"
+    try:
+        proc.terminate()
+        await asyncio.wait_for(proc.wait(), DROP_HELPER_TERM_GRACE_SECONDS)
+    except ProcessLookupError:
+        pass
+    except asyncio.TimeoutError:
+        ending = "killed"
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+    return None, f"timed out after {DROP_HELPER_TIMEOUT_SECONDS:g}s, {ending}"
 
 
 def _format_sockaddr(family: int, sockaddr: Any) -> str:
@@ -1112,6 +1237,9 @@ class CentralizedStreamServer:
         _chunked_uploads: In-flight chunked uploads by destination path: transfer
             id, next expected offset, `.part` path, last-activity stamp, and a
             busy flag that refuses interleaved writes to the same destination.
+        _drops_in_flight: The placement task of each drop id /api/drop is
+            running, held until the helper and its fallback finish even when
+            the requesting client has gone.
     """
 
     def __init__(
@@ -1144,6 +1272,8 @@ class CentralizedStreamServer:
             os.path.expanduser(self.settings.file_manager_path)
         ).resolve()
         self._chunked_uploads: Dict[str, Dict[str, Any]] = {}
+        self._drops_in_flight: Dict[str, asyncio.Task] = {}
+        self._drop_sweep: Optional["asyncio.Future[None]"] = None
         self.web_files_ctx: Optional[tempfile.TemporaryDirectory] = None
 
         self._clients_present: bool = False
@@ -2177,6 +2307,15 @@ class CentralizedStreamServer:
         Both shapes carry the mode of the file they replace onto the replacement
         and are refused for view-only credentials (the view-only password, a
         viewer-role session token).
+
+        With a drop helper configured, a request carrying X-Upload-Drop (an id
+        matching DROP_ID_PATTERN, else 400) is rooted at that drop's staging
+        directory instead (_drop_staging_root()/<id>), where /api/drop later
+        finds it; a path naming DROP_PLACED_MARKER at the top of a staging
+        directory is refused (400), since that name is the server's own record
+        of a placement. Every other rule above applies unchanged. Without a
+        helper the header is ignored and the file lands in the file-manager
+        directory.
         """
         if self._viewer_ceiling(request):
             return web.json_response(
@@ -2190,10 +2329,20 @@ class CentralizedStreamServer:
         if not root:
             return web.json_response({"status": "error", "message": "uploads disabled"}, status=403)
         root = os.path.expanduser(root)
+        drop_id = request.headers.get("X-Upload-Drop")
+        staged = drop_id is not None and bool(_drop_helper_command(settings))
+        if staged:
+            if not DROP_ID_PATTERN.fullmatch(drop_id):
+                return web.json_response({"status": "error", "message": "invalid drop id"}, status=400)
+            root = os.path.join(_drop_staging_root(), drop_id)
+            try:
+                os.makedirs(root, mode=0o700, exist_ok=True)
+            except OSError as e:
+                return web.json_response({"status": "error", "message": f"mkdir failed: {e}"}, status=500)
         rel = urllib.parse.unquote(request.headers.get("X-Upload-Path", "") or "")
         sane = os.path.normpath(rel.strip("/\\"))
         parts = [c for c in sane.split(os.sep) if c and c != "."]
-        if not parts or ".." in parts:
+        if not parts or ".." in parts or (staged and parts[0] == DROP_PLACED_MARKER):
             return web.json_response({"status": "error", "message": "invalid upload path"}, status=400)
         dest = os.path.join(root, *parts)
         real_root = os.path.realpath(root)
@@ -2310,6 +2459,226 @@ class CentralizedStreamServer:
         self._chunked_uploads.pop(dest, None)
         logger.info(f"HTTP chunked upload finished: {dest} ({received} bytes)")
         return web.json_response({"status": "success", "bytes": received, "complete": True})
+
+    def _expire_stale_drops(self) -> "asyncio.Future[None]":
+        """Start a sweep of the drop staging directories in the default
+        executor, or return the one already running.
+
+        The ids /api/drop is placing and the destinations of chunked uploads
+        are read here, on the loop, and handed to _sweep_drop_staging.
+        """
+        if self._drop_sweep is None or self._drop_sweep.done():
+            self._drop_sweep = asyncio.get_running_loop().run_in_executor(
+                None, self._sweep_drop_staging, set(self._drops_in_flight), list(self._chunked_uploads))
+        return self._drop_sweep
+
+    def _sweep_drop_staging(self, placing: Set[str], uploading: List[str]) -> None:
+        """Retire drop staging directories nothing will claim any more.
+
+        A placed drop (DROP_PLACED_MARKER present) is removed once its marker
+        is older than DROP_PLACED_TTL_SECONDS. One never placed (its upload or
+        its /api/drop failed, or the page closed between the two) is handed to
+        the file-manager directory once nothing in it has changed for
+        DROP_STAGING_TTL_SECONDS: its unfinished upload leftovers are dropped
+        and its top-level entries moved there without overwriting, exactly as
+        a refused drop's are, so a dragged file is never silently deleted.
+        A directory being placed, or that a chunked upload is still writing
+        into, is kept however old it is: a large file can take longer than
+        the TTL to arrive.
+
+        Args:
+            placing: Drop ids /api/drop is running the helper for.
+            uploading: Destination paths of in-flight chunked uploads.
+        """
+        base = _drop_staging_root()
+        try:
+            names = os.listdir(base)
+        except OSError:
+            return
+        now = time.time()
+        for name in names:
+            path = os.path.join(base, name)
+            if name in placing or any(dest.startswith(path + os.sep) for dest in uploading):
+                continue
+            try:
+                placed_at: Optional[float] = os.lstat(os.path.join(path, DROP_PLACED_MARKER)).st_mtime
+            except FileNotFoundError:
+                placed_at = None
+            except OSError:
+                continue
+            if placed_at is not None:
+                if now - placed_at > DROP_PLACED_TTL_SECONDS:
+                    shutil.rmtree(path, ignore_errors=True)
+                    logger.info(f"Expired placed drop staging directory: {path}")
+                continue
+            try:
+                if now - _tree_mtime(path) <= DROP_STAGING_TTL_SECONDS:
+                    continue
+                _discard_upload_leftovers(path)
+                landed = self._settle_drop_fallback(path, sorted(os.listdir(path)))
+            except OSError as e:
+                logger.error(f"Unplaced drop staging directory {path}: moving to {self.upload_dir} failed: {e}")
+                continue
+            logger.info(f"Unplaced drop staging directory {path} moved to {self.upload_dir}: {landed}")
+
+    def _settle_drop_fallback(self, stage: str, entries: List[str]) -> List[str]:
+        """Move a refused drop's entries into the file-manager directory, each
+        under a name nothing there has yet, then remove the staging directory.
+
+        Returns:
+            The names the entries landed under, in order.
+        """
+        target = str(self.upload_dir)
+        os.makedirs(target, exist_ok=True)
+        landed = []
+        for name in entries:
+            final = _unclaimed_name(target, name)
+            shutil.move(os.path.join(stage, name), os.path.join(target, final))
+            landed.append(final)
+        shutil.rmtree(stage, ignore_errors=True)
+        return landed
+
+    async def handle_drop(self, request: web.Request) -> web.Response:
+        """POST /api/drop: place a drag-drop's staged uploads where it landed.
+
+        The client first uploads every dropped file through /api/upload with
+        the same X-Upload-Drop id, then posts JSON
+        ``{"id": str, "x": number, "y": number, "entries": [str, ...]}``:
+        the drop point in frame-buffer pixels and the top-level names it
+        dropped. Each entry must be one path component, other than
+        DROP_PLACED_MARKER, that exists directly in the drop's staging
+        directory, and a drop already placed is refused (409). The
+        placement itself (_place_drop) runs shielded: a client that
+        disconnects mid-drop leaves it to finish and settle, so the helper's
+        outcome is never left half-recorded. Gated exactly like /api/upload,
+        and refused (403) when no helper is configured.
+        """
+        if self._viewer_ceiling(request):
+            return web.json_response(
+                {"status": "error", "message": "View-only credentials cannot upload files"},
+                status=403,
+            )
+        settings = request.app["settings"]
+        if "upload" not in settings.file_transfers or not (getattr(settings, "file_manager_path", "") or ""):
+            return web.json_response({"status": "error", "message": "uploads disabled"}, status=403)
+        helper = _drop_helper_command(settings)
+        if not helper:
+            return web.json_response({"status": "error", "message": "drop placement disabled"}, status=403)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "malformed JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"status": "error", "message": "malformed JSON body"}, status=400)
+        drop_id = body.get("id")
+        if not isinstance(drop_id, str) or not DROP_ID_PATTERN.fullmatch(drop_id):
+            return web.json_response({"status": "error", "message": "invalid drop id"}, status=400)
+        coords = []
+        for key in ("x", "y"):
+            value = body.get(key)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value < 0):
+                return web.json_response({"status": "error", "message": f"invalid {key}"}, status=400)
+            coords.append(float(value))
+        entries = body.get("entries")
+        if not isinstance(entries, list) or not entries:
+            return web.json_response({"status": "error", "message": "entries must be a non-empty list"}, status=400)
+        stage = os.path.join(_drop_staging_root(), drop_id)
+        real_stage = os.path.realpath(stage)
+        names: List[str] = []
+        for name in entries:
+            if (not isinstance(name, str) or not name or name in (".", "..", DROP_PLACED_MARKER)
+                    or "/" in name or "\\" in name or "\0" in name):
+                return web.json_response({"status": "error", "message": "invalid entry name"}, status=400)
+            path = os.path.join(stage, name)
+            if not os.path.lexists(path) or os.path.dirname(os.path.realpath(path)) != real_stage:
+                return web.json_response({"status": "error", "message": f"entry not staged: {name}"}, status=400)
+            if name not in names:
+                names.append(name)
+        if drop_id in self._drops_in_flight:
+            return web.json_response({"status": "error", "message": "drop already in progress"}, status=409)
+        if os.path.lexists(os.path.join(stage, DROP_PLACED_MARKER)):
+            return web.json_response({"status": "error", "message": "drop already placed"}, status=409)
+
+        task = asyncio.ensure_future(self._place_drop(helper, drop_id, stage, real_stage, coords, names))
+        self._drops_in_flight[drop_id] = task
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            logger.info(f"Drop {drop_id}: client went away; the placement runs to completion")
+
+            def report_orphaned(done: "asyncio.Future[web.Response]") -> None:
+                if not done.cancelled() and done.exception() is not None:
+                    logger.error(f"Drop {drop_id}: placement failed after the client left: {done.exception()}")
+
+            task.add_done_callback(report_orphaned)
+            raise
+
+    async def _place_drop(
+        self, helper: str, drop_id: str, stage: str, real_stage: str,
+        coords: List[float], names: List[str],
+    ) -> web.Response:
+        """Run the drop helper on a validated drop and settle its outcome.
+
+        The helper runs as ``HELPER X Y PATH...`` (no shell), timed out as
+        _run_drop_helper describes. Exit 0 writes DROP_PLACED_MARKER into the
+        staging directory and answers ``placed: true``; the directory is left
+        for the desktop's asynchronous copy and removed
+        DROP_PLACED_TTL_SECONDS later. Any other outcome moves the entries into
+        the file-manager directory without overwriting (``name (1).ext``) and
+        answers ``placed: false`` with a reason. The drop id stays in
+        _drops_in_flight until this returns, so no sweep touches the
+        directory while its outcome is still being recorded.
+
+        Args:
+            helper: The drop helper executable.
+            drop_id: The drop's id, naming its staging directory.
+            stage: The staging directory.
+            real_stage: ``stage`` with symlinks resolved, the prefix of every
+                path handed to the helper.
+            coords: The drop point in frame-buffer pixels.
+            names: The validated top-level entries, without duplicates.
+
+        Returns:
+            The /api/drop response.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            self._expire_stale_drops()
+            argv = [helper, f"{coords[0]:.2f}", f"{coords[1]:.2f}"]
+            argv += [os.path.join(real_stage, name) for name in names]
+            returncode, stderr_text = await _run_drop_helper(argv)
+            summary = " | ".join(line.strip() for line in stderr_text.strip().splitlines()[-3:])[:300]
+            logger.info(
+                f"Drop {drop_id} at ({coords[0]:.1f}, {coords[1]:.1f}), {len(names)} entries: "
+                f"helper exit {returncode}{'; stderr: ' + summary if summary else ''}"
+            )
+
+            if returncode == 0:
+                try:
+                    await loop.run_in_executor(None, _touch, os.path.join(stage, DROP_PLACED_MARKER))
+                except OSError as e:
+                    logger.error(f"Drop {drop_id}: could not record the placement: {e}")
+                loop.call_later(
+                    DROP_PLACED_TTL_SECONDS,
+                    lambda: loop.run_in_executor(None, shutil.rmtree, stage, True),
+                )
+                return web.json_response({"status": "success", "placed": True})
+
+            reason = (f"helper exited {returncode}" if returncode is not None else "helper did not run")
+            if summary:
+                reason += f": {summary}"
+            try:
+                landed = await loop.run_in_executor(None, self._settle_drop_fallback, stage, names)
+            except OSError as e:
+                logger.error(f"Drop {drop_id}: moving entries to {self.upload_dir} failed: {e}")
+                return web.json_response(
+                    {"status": "error", "message": f"fallback move failed: {e}"}, status=500)
+            logger.info(f"Drop {drop_id} fell back to {self.upload_dir}: {landed}")
+            return web.json_response(
+                {"status": "success", "placed": False, "reason": reason, "entries": landed})
+        finally:
+            self._drops_in_flight.pop(drop_id, None)
 
     async def handle_status(self, _: web.Request) -> web.Response:
         """GET /api/status: current mode, available modes, dual-mode flag."""
@@ -2594,6 +2963,7 @@ class CentralizedStreamServer:
             The configured application (also stored on ``self.app``).
         """
         self._require_configured_credentials()
+        self._expire_stale_drops()
 
         self.app = web.Application(middlewares=[self._auth_middleware])
         self.app["supervisor"] = self
@@ -2608,6 +2978,7 @@ class CentralizedStreamServer:
             web.get(f"{api_prefix}/api/health", self.handle_health),
             web.post(f"{api_prefix}/api/switch", self.handle_switch),
             web.post(f"{api_prefix}/api/upload", self.handle_upload),
+            web.post(f"{api_prefix}/api/drop", self.handle_drop),
             web.get(f"{api_prefix}/api/files/{{path:.*}}", self.fancy_index_handler),
         ]
         if self.settings.enable_metrics_http[0]:

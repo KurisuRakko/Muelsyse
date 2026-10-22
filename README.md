@@ -74,6 +74,7 @@ works: [capture pipeline](docs/design/capture-pipeline.md),
 | `scripts/`, `systemd/`, `config/`, `desktop/` | Native-host deployment: session launcher, systemd units, env template, launcher entries, build/deploy/drift-check scripts | Original |
 | `system/` | Root-owned host files (udev rule, nftables fragment, GPU mode switch) installed from the manifest | Original |
 | `sunshine/` | Sunshine/Moonlight side path: evdev → KWin `fake_input` input bridge (C), session prep scripts, units | Original |
+| `desktop-drop/` | Precise file drop: replays a browser drop as a native Wayland drag at the same spot, so files land where they were dropped (C) | Original |
 | `deploy/manifest.tsv` | Repo file → host path contract shared by `deploy-host.sh` and the drift check | Original |
 | `deploy/remote-desktop/` | Alternative containerized deployment (official Selkies image, no KWin patch needed) | Original |
 | `docs/` | Design docs, deployment guide, known limitations | Original |
@@ -217,6 +218,8 @@ listed in [`docs/known-limitations.md`](docs/known-limitations.md).
 - `sunshine/input-bridge/` — MIT for the bridge's own C sources (SPDX
   tags in each file); the generated Wayland protocol files next to them
   keep their upstream licenses.
+- `desktop-drop/` — MIT for the helper's own C source, same arrangement as
+  the input bridge.
 - Everything else, including `kwin-adapter/` — GPL-2.0-or-later
   ([`LICENSE`](LICENSE)).
 

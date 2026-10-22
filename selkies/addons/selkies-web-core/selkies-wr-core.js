@@ -391,6 +391,8 @@ export default function webrtc() {
 	let touchOptions = { native: true, swipeScroll: true, longPressMs: 600, pinchZoom: true, inertia: true };
 	/** Whether the server delivers native touch (`native_touch` in `server_settings`). */
 	let serverNativeTouch = false;
+	/** Whether the server places drag-drops where they land (`drop_helper_enabled` in `server_settings`). */
+	let serverDropHelper = false;
 	const touchOptionsForDashboard = () => ({ ...touchOptions, nativeAvailable: serverNativeTouch });
 	/**
 	 * Cursor-rendering preference in force: seeded from localStorage at
@@ -2022,7 +2024,16 @@ export default function webrtc() {
 	};
 
 	/** HTTP uploads and the drag-drop and file-picker plumbing (`lib/file-upload.js`); shared sessions never upload. */
-	const fileUploader = createFileUploader({ canUpload: () => !isSharedMode });
+	/**
+	 * A drop on the primary display is placed where it landed once the server
+	 * advertises a drop helper; anything else is a plain upload.
+	 */
+	const fileUploader = createFileUploader({
+		canUpload: () => !isSharedMode,
+		dropPoint: (ev) => (serverDropHelper && !window.location.hash.startsWith('#display2')
+				&& window.webrtcInput && typeof window.webrtcInput.clientToFramePoint === 'function')
+			? window.webrtcInput.clientToFramePoint(ev.clientX, ev.clientY) : null,
+	});
 	const handleRequestFileUpload = fileUploader.handleRequestFileUpload;
 	const handleFileInputChange = fileUploader.handleFileInputChange;
 	const handleDragOver = fileUploader.handleDragOver;
@@ -3044,6 +3055,8 @@ export default function webrtc() {
 				}
 				const ce = obj.settings && obj.settings.command_enabled;
 				serverCommandEnabled = (ce && typeof ce.value === 'boolean') ? ce.value : true;
+				const dh = obj.settings && obj.settings.drop_helper_enabled;
+				serverDropHelper = !!(dh && dh.value === true);
 				const nt = obj.settings && obj.settings.native_touch;
 				const nativeTouch = !!(nt && nt.value === true);
 				if (nativeTouch !== serverNativeTouch) {

@@ -18,6 +18,9 @@ sunshine/input-bridge/muelsyse-sunshine-input-bridge
 sunshine/input-bridge/test/uinput-dev
 sunshine/input-bridge/test/wl-input-probe
 
+# 桌面拖放 helper 的构建产物（desktop-drop）
+desktop-drop/muelsyse-drop-helper
+
 # Public export only
 CMakeFiles/
 CMakeCache.txt

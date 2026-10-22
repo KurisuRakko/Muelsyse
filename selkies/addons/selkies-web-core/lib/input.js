@@ -4896,6 +4896,35 @@ export class Input {
     }
 
     /**
+     * Frame-buffer position of a client point, for placing a file drop, or
+     * `null` when the point is off the stream or no geometry is known yet.
+     * Mapped the way a pointer event is — through the visible sink box, else
+     * the window math — but neither clamped into the frame nor carried onto
+     * a neighboring display.
+     * @param {number} clientX
+     * @param {number} clientY
+     * @returns {{x: number, y: number}|null}
+     */
+    clientToFramePoint(clientX, clientY) {
+        const box = this._sinkBox(document.getElementById('videoCanvas'), document.getElementById('stream'));
+        let point = box ? mapClientToStream(clientX, clientY, box) : null;
+        let frameW = box ? box.sinkW : 0;
+        let frameH = box ? box.sinkH : 0;
+        if (!point) {
+            if (!this.m) this._windowMath();
+            if (!this.m) return null;
+            point = { x: this._clientToServerX(clientX), y: this._clientToServerY(clientY) };
+            frameW = this.m.frameW;
+            frameH = this.m.frameH;
+        }
+        if (!Number.isFinite(point.x) || !Number.isFinite(point.y)
+            || point.x < 0 || point.y < 0 || point.x >= frameW || point.y >= frameH) {
+            return null;
+        }
+        return point;
+    }
+
+    /**
      * Base64-encodes a gamepad name for the `js,c` message. The server
      * decodes it as Latin-1, so codepoints outside that range (localized
      * vendor names) are replaced rather than handed to `btoa`, which throws
