@@ -33,7 +33,7 @@ Environment=XCURSOR_THEME=breeze_cursors
 Environment=XCURSOR_SIZE=24
 Environment=WAYLAND_DISPLAY=wayland-remote-desktop
 # KWin 跑 scripts/build-kwin.sh 装出来的版本化 prefix（current 软链），不再直接从构建树跑：
-# 旧的 ~/build/kwin-adapter 源码是 POC 树，一重编就会盖掉双光标修复（docs/host-files-inventory.md）。
+# 旧的 ~/build/kwin-adapter 源码是 POC 树，一重编就会盖掉双光标修复。
 Environment=SELKIES_KWIN_PREFIX=%h/.local/share/remote-desktop/kwin/current
 # kwin_wayland 和插件的 DT_RUNPATH 指向构建树（~/build/rakkord-kwin/bin），构建树随时可能
 # 被重编或清掉。glibc 的搜索顺序里 LD_LIBRARY_PATH
@@ -56,7 +56,7 @@ Environment=KWIN_SCREENCAST_STATS=1
 #                Selkies 跟随同卡零拷贝 NVENC（见 scripts/selkies-dri-exec.sh）。
 # 验收脚本会按 dri_mode() 核对 KWin 打开的节点（scripts/verify-nvenc.sh §4）：
 # intel 模式断言"nvidia_drm 未加载 + NVIDIA 无任何 DRM 节点"，nvidia 模式断言相反。
-# 这两条一旦破，KWin 就可能选错卡，Selkies 随之跨卡丢帧黑屏（tasks/gpu-nvenc/004.report.md §1）。
+# 这两条一旦破，KWin 就可能选错卡，Selkies 随之跨卡丢帧黑屏。
 # 必须走 launcher：若把 ExecStart 直接指向 Debian 装机自带的系统 kwin_wayland，
 # 它不加载 selkieskwinadapter.so 插件，抓屏链路会断；launcher 依据 SELKIES_KWIN_PREFIX
 # 改选隔离构建的 kwin_wayland 并补上 bin/kwin/plugins 的 QT_PLUGIN_PATH。
