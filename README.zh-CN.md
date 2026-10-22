@@ -1,6 +1,6 @@
-# RakkoRD
+# Muelsyse
 
-*[English](README.md)*
+*[English](README.md) · 原名 RakkoRD；名字取自《明日方舟》的缪尔赛思，她能派出水做的分身替自己去别处干活。*
 
 一个基于 KDE Plasma Wayland 与 [Selkies](https://github.com/selkies-project/selkies)
 的远程桌面：通过 PipeWire/DMA-BUF 捕获真实的 KWin 会话，用硬件 H.264 编码，

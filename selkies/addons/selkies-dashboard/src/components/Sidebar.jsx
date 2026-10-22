@@ -964,7 +964,7 @@ function Sidebar() {
   const [isTouchGamepadSetup, setIsTouchGamepadSetup] = useState(false);
   const [availablePlacements, setAvailablePlacements] = useState(null);
   const [serverSettings, setServerSettings] = useState(null);
-  const [uiTitle, setUiTitle] = useState('Rakko Remote Desktop');
+  const [uiTitle, setUiTitle] = useState('Muelsyse');
   const [uiShowLogo, setUiShowLogo] = useState(true);
 
   useEffect(() => {
@@ -2414,7 +2414,7 @@ function Sidebar() {
       let response = await doSwitch();
       if (response.status === 401) {
         const entered = (typeof window !== "undefined" && window.prompt)
-          ? window.prompt("Switching the stream mode requires the Rakko Remote Desktop master token:")
+          ? window.prompt("Switching the stream mode requires the Muelsyse master token:")
           : null;
         if (entered && entered.trim()) {
           try { sessionStorage.setItem(MASTER_TOKEN_KEY, entered.trim()); } catch { /* sessionStorage unavailable */ }

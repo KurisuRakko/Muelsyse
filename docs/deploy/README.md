@@ -1,6 +1,6 @@
 # Deployment
 
-RakkoRD can be deployed two ways: as a native host session that talks to
+Muelsyse can be deployed two ways: as a native host session that talks to
 a patched KWin, or as a self-contained container that needs no host
 patches at all. Both keep Selkies listening on loopback only and expect a
 reverse proxy or tunnel in front of them for remote/public access —
@@ -81,7 +81,7 @@ never a screenshot), and cleans up after itself without touching a
 production instance. `scripts/verify-live-text.sh` is the equivalent
 read-only check for an already-running production deployment (checks the
 services are active and Selkies is bound to loopback only). They're not
-needed to run RakkoRD; they're what was used to validate it during
+needed to run Muelsyse; they're what was used to validate it during
 development.
 
 ### Optional side paths

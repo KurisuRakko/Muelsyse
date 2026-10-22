@@ -1,6 +1,6 @@
-# RakkoRD
+# Muelsyse
 
-*[中文版](README.zh-CN.md)*
+*[中文版](README.zh-CN.md) · Formerly RakkoRD; named after Muelsyse from* Arknights*, who sends water clones of herself to work somewhere else.*
 
 A remote desktop built on KDE Plasma Wayland and [Selkies](https://github.com/selkies-project/selkies):
 capture a real KWin session over PipeWire/DMA-BUF, encode it with

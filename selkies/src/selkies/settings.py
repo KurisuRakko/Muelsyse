@@ -385,7 +385,7 @@ SETTING_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "name": "ui_title",
         "type": "str",
-        "default": "Rakko Remote Desktop",
+        "default": "Muelsyse",
         "help": "Title in top left corner of sidebar.",
     },
     {

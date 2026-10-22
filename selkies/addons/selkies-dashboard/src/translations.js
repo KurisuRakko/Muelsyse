@@ -17,7 +17,7 @@ const simpleInterpolate = (str, variables) => {
 
 // --- English Translations (Default) ---
 const en = {
-    selkiesLogoAlt: "Rakko Remote Desktop Logo",
+    selkiesLogoAlt: "Muelsyse Logo",
     toggleThemeTitle: "Toggle Theme",
     openDashboardTitle: "Open Dashboard",
     closeDashboardTitle: "Close Dashboard",
@@ -275,7 +275,7 @@ const en = {
 
 // --- Spanish Translations (Complete) ---
 const es = {
-    selkiesLogoAlt: "Logo de Rakko Remote Desktop",
+    selkiesLogoAlt: "Logo de Muelsyse",
     toggleThemeTitle: "Cambiar Tema",
     openDashboardTitle: "Abrir el panel",
     closeDashboardTitle: "Cerrar el panel",
@@ -533,7 +533,7 @@ const es = {
 
 // --- Chinese (Simplified) Translations ---
 const zh = {
-    selkiesLogoAlt: "Rakko Remote Desktop 徽标",
+    selkiesLogoAlt: "Muelsyse 徽标",
     toggleThemeTitle: "切换主题",
     openDashboardTitle: "打开仪表板",
     closeDashboardTitle: "关闭仪表板",
@@ -791,7 +791,7 @@ const zh = {
 
 // --- Hindi Translations ---
 const hi = {
-    selkiesLogoAlt: "Rakko Remote Desktop लोगो",
+    selkiesLogoAlt: "Muelsyse लोगो",
     toggleThemeTitle: "थीम बदलें",
     openDashboardTitle: "डैशबोर्ड खोलें",
     closeDashboardTitle: "डैशबोर्ड बंद करें",
@@ -1049,7 +1049,7 @@ const hi = {
 
 // --- Portuguese Translations ---
 const pt = {
-    selkiesLogoAlt: "Logo Rakko Remote Desktop",
+    selkiesLogoAlt: "Logo Muelsyse",
     toggleThemeTitle: "Alternar Tema",
     openDashboardTitle: "Abrir o painel",
     closeDashboardTitle: "Fechar o painel",
@@ -1307,7 +1307,7 @@ const pt = {
 
 // --- French Translations ---
 const fr = {
-    selkiesLogoAlt: "Logo Rakko Remote Desktop",
+    selkiesLogoAlt: "Logo Muelsyse",
     toggleThemeTitle: "Changer de thème",
     openDashboardTitle: "Ouvrir le tableau de bord",
     closeDashboardTitle: "Fermer le tableau de bord",
@@ -1566,7 +1566,7 @@ const fr = {
 
 // --- Russian Translations ---
 const ru = {
-    selkiesLogoAlt: "Логотип Rakko Remote Desktop",
+    selkiesLogoAlt: "Логотип Muelsyse",
     toggleThemeTitle: "Переключить тему",
     openDashboardTitle: "Открыть панель",
     closeDashboardTitle: "Закрыть панель",
@@ -1824,7 +1824,7 @@ const ru = {
 
 // --- German Translations ---
 const de = {
-    selkiesLogoAlt: "Rakko Remote Desktop-Logo",
+    selkiesLogoAlt: "Muelsyse-Logo",
     toggleThemeTitle: "Theme wechseln",
     openDashboardTitle: "Dashboard öffnen",
     closeDashboardTitle: "Dashboard schließen",
@@ -2082,7 +2082,7 @@ const de = {
 
 // --- Turkish Translations ---
 const tr = {
-    selkiesLogoAlt: "Rakko Remote Desktop Logosu",
+    selkiesLogoAlt: "Muelsyse Logosu",
     toggleThemeTitle: "Temayı Değiştir",
     openDashboardTitle: "Paneli aç",
     closeDashboardTitle: "Paneli kapat",
@@ -2340,7 +2340,7 @@ const tr = {
 
 // --- Italian Translations ---
 const it = {
-    selkiesLogoAlt: "Logo Rakko Remote Desktop",
+    selkiesLogoAlt: "Logo Muelsyse",
     toggleThemeTitle: "Cambia Tema",
     openDashboardTitle: "Apri la dashboard",
     closeDashboardTitle: "Chiudi la dashboard",
@@ -2598,7 +2598,7 @@ const it = {
 
 // --- Dutch Translations ---
 const nl = {
-    selkiesLogoAlt: "Rakko Remote Desktop-logo",
+    selkiesLogoAlt: "Muelsyse-logo",
     toggleThemeTitle: "Thema wisselen",
     openDashboardTitle: "Dashboard openen",
     closeDashboardTitle: "Dashboard sluiten",
@@ -2856,7 +2856,7 @@ const nl = {
 
 // --- Arabic Translations ---
 const ar = {
-    selkiesLogoAlt: "شعار Rakko Remote Desktop",
+    selkiesLogoAlt: "شعار Muelsyse",
     toggleThemeTitle: "تبديل السمة",
     openDashboardTitle: "فتح لوحة التحكم",
     closeDashboardTitle: "إغلاق لوحة التحكم",
@@ -3114,7 +3114,7 @@ const ar = {
 
 // --- Korean Translations ---
 const ko = {
-    selkiesLogoAlt: "Rakko Remote Desktop 로고",
+    selkiesLogoAlt: "Muelsyse 로고",
     toggleThemeTitle: "테마 전환",
     openDashboardTitle: "대시보드 열기",
     closeDashboardTitle: "대시보드 닫기",
@@ -3372,7 +3372,7 @@ const ko = {
 
 // --- Japanese Translations ---
 const ja = {
-    selkiesLogoAlt: "Rakko Remote Desktop ロゴ",
+    selkiesLogoAlt: "Muelsyse ロゴ",
     toggleThemeTitle: "テーマを切り替え",
     openDashboardTitle: "ダッシュボードを開く",
     closeDashboardTitle: "ダッシュボードを閉じる",
@@ -3630,7 +3630,7 @@ const ja = {
 
 // --- Vietnamese Translations ---
 const vi = {
-    selkiesLogoAlt: "Logo Rakko Remote Desktop",
+    selkiesLogoAlt: "Logo Muelsyse",
     toggleThemeTitle: "Chuyển đổi Chủ đề",
     openDashboardTitle: "Mở bảng điều khiển",
     closeDashboardTitle: "Đóng bảng điều khiển",
@@ -3888,7 +3888,7 @@ const vi = {
 
 // --- Thai Translations ---
 const th = {
-    selkiesLogoAlt: "โลโก้ Rakko Remote Desktop",
+    selkiesLogoAlt: "โลโก้ Muelsyse",
     toggleThemeTitle: "สลับธีม",
     openDashboardTitle: "เปิดแดชบอร์ด",
     closeDashboardTitle: "ปิดแดชบอร์ด",
@@ -4146,7 +4146,7 @@ const th = {
 
 // --- Filipino Translations ---
 const fil = {
-    selkiesLogoAlt: "Logo ng Rakko Remote Desktop",
+    selkiesLogoAlt: "Logo ng Muelsyse",
     toggleThemeTitle: "I-toggle ang Tema",
     openDashboardTitle: "Buksan ang dashboard",
     closeDashboardTitle: "Isara ang dashboard",
@@ -4404,7 +4404,7 @@ const fil = {
 
 // --- Danish Translations ---
 const da = {
-    selkiesLogoAlt: "Rakko Remote Desktop-logo",
+    selkiesLogoAlt: "Muelsyse-logo",
     toggleThemeTitle: "Skift tema",
     openDashboardTitle: "Åbn dashboardet",
     closeDashboardTitle: "Luk dashboardet",

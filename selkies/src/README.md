@@ -170,7 +170,7 @@ The table below lists all available server settings.
 
 | Environment Variable | CLI Flag | Default Value | Description |
 | -------------------- | -------- | ------------- | ----------- |
-| `SELKIES_UI_TITLE` | `--ui-title` | `'Rakko Remote Desktop'` | Title in top left corner of sidebar. |
+| `SELKIES_UI_TITLE` | `--ui-title` | `'Muelsyse'` | Title in top left corner of sidebar. |
 | `SELKIES_UI_SHOW_LOGO` | `--ui-show-logo` | `True` | Show the remote desktop product logo in the sidebar. |
 | `SELKIES_UI_SHOW_SIDEBAR` | `--ui-show-sidebar` | `True` | Show the main sidebar UI. |
 | `SELKIES_UI_SHOW_CORE_BUTTONS` | `--ui-show-core-buttons` | `True` | Show the core components buttons display, audio, microphone, and gamepad. |
