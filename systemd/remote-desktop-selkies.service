@@ -57,7 +57,7 @@ Environment=SELKIES_WEBCAM_ENABLED=false|locked
 Environment=SELKIES_WEBCAM_ON_START=false|locked
 Environment=SELKIES_GAMEPAD_ENABLED=false|locked
 Environment=SELKIES_GAMEPAD_ON_START=false|locked
-Environment=SELKIES_FILE_TRANSFERS=none
+Environment=SELKIES_FILE_TRANSFERS=upload
 Environment=SELKIES_COMMAND_ENABLED=false
 Environment=SELKIES_ENABLE_CLIPBOARD=true
 Environment=SELKIES_ENABLE_BINARY_CLIPBOARD=true
