@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""muelsyse-displayd 的命令行客户端：看状态、改虚拟屏分辨率/缩放、锁定 / 跟随。
+
+用法:
+    muelsyse-display status [--json]
+    muelsyse-display set WxH [--scale S] [--force]
+    muelsyse-display set --scale S [--force]
+    muelsyse-display pin [WxH] [--scale S]
+    muelsyse-display follow
+    muelsyse-display lease NAME [--ttl SECONDS]
+    muelsyse-display release NAME
+
+退出码：0 成功；1 被拒（stderr 一行 `rejected: <reason> <detail>`）；2 用法错；
+3 连不上 muelsyse-displayd；4 连上了但没等到正常回复（请求可能已执行，以 status 为准）。`status --json` 原样输出守护进程的回复，字段供菜单脚本解析。
+socket 默认 `$XDG_RUNTIME_DIR/muelsyse-display.sock`，可用 MUELSYSE_DISPLAY_SOCKET 覆盖。
+"""
+
+import argparse
+import json
+import os
+import re
+import socket
+import sys
+import time
+
+# 要比守护进程最坏的一次请求长：排队 15 s + 几次 kscreen-doctor（各 10 s）+ 回滚。
+REPLY_TIMEOUT_S = 120
+
+
+class Unreachable(Exception):
+    pass
+
+
+class NoReply(Exception):
+    """连上了但没等到正常回复（超时、断开、格式不对），和「没在运行」区分开。"""
+
+
+def socket_path():
+    override = os.environ.get("MUELSYSE_DISPLAY_SOCKET")
+    if override:
+        return override
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        raise Unreachable("XDG_RUNTIME_DIR 未设置")
+    return os.path.join(runtime, "muelsyse-display.sock")
+
+
+def call(payload):
+    path = socket_path()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(REPLY_TIMEOUT_S)
+        try:
+            sock.connect(path)
+        except OSError as e:
+            raise Unreachable(f"连不上 {path}: {e.strerror or e}") from e
+        try:
+            sock.sendall((json.dumps(payload) + "\n").encode())
+            line = sock.makefile("rb").readline()
+            reply = json.loads(line)
+        except (OSError, ValueError) as e:
+            raise NoReply(f"muelsyse-displayd 没有正常应答: {e!r}") from e
+    if not isinstance(reply, dict):
+        raise NoReply("muelsyse-displayd 回复格式不对")
+    return reply
+
+
+def size_arg(text):
+    m = re.fullmatch(r"(\d+)[xX](\d+)", text)
+    if not m:
+        raise argparse.ArgumentTypeError(f"分辨率要写成 WxH，例如 1920x1080: {text!r}")
+    return int(m.group(1)), int(m.group(2))
+
+
+def fmt_scale(scale):
+    return f"{scale:g}"
+
+
+def describe_status(st):
+    mode = st["mode"]
+    lines = [f"mode {mode['w']}x{mode['h']}@{mode['refresh_mhz'] / 1000:g} scale {fmt_scale(st['scale'])}"]
+    pin = st.get("pin")
+    if st.get("policy") == "pinned" and pin:
+        lines.append(f"policy pinned {pin['w']}x{pin['h']} scale {fmt_scale(pin['scale'])}")
+    else:
+        lines.append("policy follow")
+    leases = st.get("leases") or []
+    if leases:
+        parts = [f"{l['name']}（到 {time.strftime('%m-%d %H:%M', time.localtime(l['expires_at']))}）" for l in leases]
+        lines.append("leases " + ", ".join(parts))
+    else:
+        lines.append("leases 无")
+    sk = st.get("selkies") or {}
+    lines.append(f"selkies {'active' if sk.get('service_active') else 'inactive'}，客户端 {sk.get('clients', 'unknown')}")
+    lines.append(f"uu {'正在看' if st.get('uu_watching') else '没在看'}")
+    lc = st.get("last_change")
+    if lc:
+        f, t = lc["from"], lc["to"]
+        when = time.strftime("%m-%d %H:%M:%S", time.localtime(lc["at"]))
+        lines.append(f"last {when} {lc['source']} {f['w']}x{f['h']}@{fmt_scale(f['scale'])} → "
+                     f"{t['w']}x{t['h']}@{fmt_scale(t['scale'])} {lc['result']}（{lc['ms']}ms）")
+    return "\n".join(lines)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="muelsyse-display", description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("status", help="当前 mode / scale / 策略")
+    p.add_argument("--json", action="store_true", help="原样输出 JSON")
+    p = sub.add_parser("set", help="改分辨率和/或缩放")
+    p.add_argument("size", nargs="?", type=size_arg, help="WxH")
+    p.add_argument("--scale", type=float)
+    p.add_argument("--force", action="store_true", help="越过租约和 Selkies 在用的检查")
+    p = sub.add_parser("pin", help="锁定（不给参数就锁定当前值）")
+    p.add_argument("size", nargs="?", type=size_arg, help="WxH")
+    p.add_argument("--scale", type=float)
+    sub.add_parser("follow", help="解除锁定，跟随浏览器")
+    p = sub.add_parser("lease", help="拿一个租约（持有期间别人改不了）")
+    p.add_argument("name")
+    p.add_argument("--ttl", type=int, default=12 * 3600, help="秒，默认 12 小时")
+    p = sub.add_parser("release", help="释放租约")
+    p.add_argument("name")
+    return parser
+
+
+def target(opts):
+    req = {}
+    if opts.size is not None:
+        req["w"], req["h"] = opts.size
+    if opts.scale is not None:
+        req["scale"] = opts.scale
+    return req
+
+
+def main(argv=None):
+    parser = build_parser()
+    opts = parser.parse_args(argv)
+    if opts.cmd == "set":
+        if opts.size is None and opts.scale is None:
+            parser.error("set 至少要给 WxH 或 --scale")
+        payload = {"op": "request", **target(opts), "source": "cli", "force": opts.force}
+    elif opts.cmd == "pin":
+        payload = {"op": "pin", **target(opts)}
+    elif opts.cmd == "lease":
+        payload = {"op": "lease", "name": opts.name, "ttl_s": opts.ttl}
+    elif opts.cmd == "release":
+        payload = {"op": "release", "name": opts.name}
+    else:
+        payload = {"op": opts.cmd}
+
+    try:
+        reply = call(payload)
+    except Unreachable as e:
+        print(f"muelsyse-displayd 没在运行（{e}）；systemctl --user start muelsyse-displayd", file=sys.stderr)
+        return 3
+    except NoReply as e:
+        # 请求可能已经在执行，结果以 status 为准。
+        print(f"{e}；用 muelsyse-display status 查看实际状态", file=sys.stderr)
+        return 4
+
+    if not reply.get("ok"):
+        print(f"rejected: {reply.get('reason', 'unknown')} {reply.get('detail', '')}".rstrip(), file=sys.stderr)
+        return 1
+    if opts.cmd == "status":
+        print(json.dumps(reply, ensure_ascii=False) if opts.json else describe_status(reply))
+    elif "result" in reply:
+        mode = reply["mode"]
+        print(f"{reply['result']} {mode['w']}x{mode['h']} scale {fmt_scale(reply['scale'])}")
+    elif opts.cmd == "follow":
+        print("follow")
+    elif opts.cmd == "lease":
+        print(f"lease {opts.name} 到 {time.strftime('%m-%d %H:%M:%S', time.localtime(reply['lease']['expires_at']))}")
+    elif opts.cmd == "release":
+        print(f"released {opts.name}" if reply.get("released") else f"{opts.name} 没有租约")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

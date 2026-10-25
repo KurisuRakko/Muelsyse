@@ -6,6 +6,7 @@
 remote-desktop-wayland.service	user	yes
 remote-desktop-selkies.service	user	yes
 muelsyse-imecaret.service	user	yes
+muelsyse-displayd.service	user	yes
 muelsyse-sunshine-input.service	user	yes
 muelsyse-moonlight-preempt.service	user	yes
 muelsyse-drift-check.timer	user	yes

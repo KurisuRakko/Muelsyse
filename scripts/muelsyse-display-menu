@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# 远程桌面虚拟显示器的 kdialog 菜单：改分辨率、缩放、锁定/跟随、释放租约。
+# 只是 muelsyse-display CLI 的前端，所有改动都经 CLI 发给 muelsyse-displayd。
+# 任何对话框点取消都安静退出（退出码 0）。
+set -u
+
+CLI=${MUELSYSE_DISPLAY_CLI:-$HOME/.local/bin/muelsyse-display}
+TITLE="显示器设置（Muelsyse）"
+
+PRESETS=(3840x2160 2560x1440 2560x1600 1920x1080 1920x1200)
+SCALES=(1.0 1.25 1.5 1.75 2.0)
+SCALE_LABELS=(100% 125% 150% 175% 200%)
+
+# 解析 status --json，逐行输出：w h scale policy pin_w pin_h pin_scale clients uu_watching，
+# 之后每行一个租约名。解析失败退出 1。
+parse_status() {
+	python3 -I -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+m = d.get("mode") or {}
+pin = d.get("pin") or {}
+sel = d.get("selkies") or {}
+def s(v):
+    return "" if v is None else str(v).replace("\n", " ")
+print(s(m.get("w"))); print(s(m.get("h"))); print(s(d.get("scale")))
+print(s(d.get("policy")))
+print(s(pin.get("w"))); print(s(pin.get("h"))); print(s(pin.get("scale")))
+print(s(sel.get("clients")))
+print("true" if d.get("uu_watching") else "false")
+for l in d.get("leases") or []:
+    n = s(l.get("name") if isinstance(l, dict) else l)
+    if n:
+        print(n)
+'
+}
+
+pct() {
+	python3 -I -c 'import sys; print(f"{float(sys.argv[1])*100:g}%")' "$1" 2>/dev/null || printf '%s' "$1"
+}
+
+status_json=$("$CLI" status --json 2>/dev/null)
+rc=$?
+if [ "$rc" -eq 3 ]; then
+	kdialog --title "$TITLE" --error "muelsyse-displayd 没在运行。
+
+可以在终端里执行：
+systemctl --user start muelsyse-displayd"
+	exit 1
+elif [ "$rc" -ne 0 ]; then
+	kdialog --title "$TITLE" --error "读取显示器状态失败（muelsyse-display 退出码 $rc）。"
+	exit 1
+fi
+
+if ! mapfile -t st < <(printf '%s' "$status_json" | parse_status) || [ "${#st[@]}" -lt 9 ]; then
+	kdialog --title "$TITLE" --error "无法解析显示器状态。"
+	exit 1
+fi
+cur_w=${st[0]} cur_h=${st[1]} cur_scale=${st[2]} policy=${st[3]}
+pin_w=${st[4]} pin_h=${st[5]} pin_scale=${st[6]} clients=${st[7]} uu_watching=${st[8]}
+leases=("${st[@]:9}")
+
+# 状态说明
+info="当前：${cur_w}x${cur_h}，缩放 $(pct "$cur_scale")"
+if [ "$policy" = "pinned" ]; then
+	pin_desc=""
+	[ -n "$pin_w" ] && pin_desc="${pin_w}x${pin_h}"
+	[ -n "$pin_scale" ] && pin_desc="${pin_desc:+$pin_desc，}缩放 $(pct "$pin_scale")"
+	info+=$'\n'"策略：已锁定${pin_desc:+（$pin_desc）}"
+else
+	info+=$'\n'"策略：跟随网页端窗口"
+fi
+case "$clients" in
+yes) info+=$'\n'"网页端：有人在看" ;;
+no) info+=$'\n'"网页端：没人在看" ;;
+*) info+=$'\n'"网页端：不确定" ;;
+esac
+if [ "${#leases[@]}" -gt 0 ]; then
+	info+=$'\n'"租约：${leases[*]}"
+fi
+
+items=()
+for p in "${PRESETS[@]}"; do
+	label=$p
+	[ "$p" = "${cur_w}x${cur_h}" ] && label="$p（当前）"
+	items+=("res:$p" "$label")
+done
+items+=(custom "自定义分辨率…" scale "缩放…")
+if [ "$policy" = "pinned" ]; then
+	items+=(follow "改回跟随网页端窗口")
+else
+	items+=(pin "锁定当前设置")
+fi
+for n in "${leases[@]}"; do
+	items+=("release:$n" "释放 $n 租约")
+done
+
+choice=$(kdialog --title "$TITLE" --menu "$info" "${items[@]}") || exit 0
+
+cmd=()
+case "$choice" in
+res:*)
+	cmd=(set "${choice#res:}")
+	;;
+custom)
+	prompt="输入分辨率（宽x高，例如 1920x1080；偶数，320–4080）："
+	default="${cur_w}x${cur_h}"
+	while :; do
+		val=$(kdialog --title "$TITLE" --inputbox "$prompt" "$default") || exit 0
+		val=${val// /}
+		val=${val//X/x}
+		if [[ $val =~ ^([0-9]+)x([0-9]+)$ ]]; then
+			w=$((10#${BASH_REMATCH[1]})) h=$((10#${BASH_REMATCH[2]}))
+			if ((w >= 320 && w <= 4080 && h >= 320 && h <= 4080 && w % 2 == 0 && h % 2 == 0)); then
+				cmd=(set "${w}x${h}")
+				break
+			fi
+		fi
+		kdialog --title "$TITLE" --sorry "“$val”不合法：格式为 宽x高，宽和高都要是偶数，范围 320–4080。"
+		default=$val
+	done
+	;;
+scale)
+	radio=()
+	for i in "${!SCALES[@]}"; do
+		on=off
+		python3 -I -c 'import sys; sys.exit(0 if abs(float(sys.argv[1])-float(sys.argv[2]))<1e-6 else 1)' \
+			"${SCALES[$i]}" "$cur_scale" 2>/dev/null && on=on
+		radio+=("${SCALES[$i]}" "${SCALE_LABELS[$i]}" "$on")
+	done
+	s=$(kdialog --title "$TITLE" --radiolist "选择缩放（当前 $(pct "$cur_scale")）：" "${radio[@]}") || exit 0
+	[ -n "$s" ] || exit 0
+	cmd=(set --scale "$s")
+	;;
+pin) cmd=(pin) ;;
+follow) cmd=(follow) ;;
+release:*) cmd=(release "${choice#release:}") ;;
+*) exit 0 ;;
+esac
+
+errf=$(mktemp)
+out=$("$CLI" "${cmd[@]}" 2>"$errf")
+rc=$?
+err=$(cat "$errf")
+rm -f "$errf"
+
+if [ "$rc" -eq 0 ]; then
+	# 不带参数的 pin 只锁定当前值，CLI 回的也是 unchanged，不能当成「已经是这个设置」。
+	case "${cmd[0]}" in
+	pin) out="" ;;
+	esac
+	case "$out" in
+	unchanged*)
+		kdialog --title "$TITLE" --passivepopup "已经是这个设置" 5
+		;;
+	*)
+		msg=""
+		if [[ $out =~ ^applied\ ([0-9]+x[0-9]+)\ scale\ ([0-9.]+) ]]; then
+			msg="已切换到 ${BASH_REMATCH[1]}，缩放 $(pct "${BASH_REMATCH[2]}")"
+		elif [ "${cmd[0]}" = pin ]; then
+			msg="已锁定当前设置"
+		elif [ "${cmd[0]}" = follow ]; then
+			msg="已改回跟随网页端窗口"
+		elif [ "${cmd[0]}" = release ]; then
+			msg="已释放 ${cmd[1]} 租约"
+		else
+			msg="已应用：${out:-完成}"
+		fi
+		[ "$uu_watching" = true ] && msg+=$'\n'"UU 远程画面若卡住，请断开重连"
+		kdialog --title "$TITLE" --passivepopup "$msg" 5
+		;;
+	esac
+	exit 0
+fi
+
+if [ "$rc" -eq 3 ]; then
+	kdialog --title "$TITLE" --error "muelsyse-displayd 没在运行。
+
+可以在终端里执行：
+systemctl --user start muelsyse-displayd"
+	exit 1
+fi
+
+# 被拒（1）或其他错误：stderr 形如 "rejected: <reason> <detail>"
+line=$(printf '%s\n' "$err" | grep -m1 '^rejected:' || true)
+if [ -n "$line" ]; then
+	rest=${line#rejected:}
+	rest=${rest# }
+	reason=${rest%% *}
+	detail=""
+	[ "$rest" != "$reason" ] && detail=${rest#* }
+	case "$reason" in
+	selkies_active) text="网页端正有人连着，请在网页端侧栏改分辨率，或先关掉网页端" ;;
+	pinned) text="当前已锁定，先改回跟随或直接在这里改" ;;
+	leased:sunshine) text="Moonlight 正在串流（Sunshine 租约），结束后再改，或先释放租约" ;;
+	leased:*) text="${reason#leased:} 持有租约，结束后再改，或先释放租约" ;;
+	verify_failed) text="切换后校验失败，已恢复原设置" ;;
+	busy) text="正在处理别的请求，稍后再试" ;;
+	invalid) text="参数不合法${detail:+：$detail}" ;;
+	backend_error) text="显示后端出错${detail:+：$detail}" ;;
+	*) text=$rest ;;
+	esac
+else
+	text="命令失败（退出码 $rc）${err:+：$err}"
+fi
+kdialog --title "$TITLE" --sorry "$text"
+exit 0

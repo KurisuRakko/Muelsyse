@@ -1,0 +1,25 @@
+# ~/.config/systemd/user/muelsyse-displayd.service
+# （仓库副本：systemd/muelsyse-displayd.service；脚本装在 ~/.local/libexec/muelsyse-displayd.py）
+#
+# 虚拟屏 Virtual-0 的 mode/scale 决策点。桌面 app、muelsyse-display CLI、Sunshine
+# session-prep 经 $XDG_RUNTIME_DIR/muelsyse-display.sock 提请求，本进程按 follow/pinned/租约
+# 裁决，在一把锁里 adapter prepare → kscreen-doctor 切换 → 回读校验。Selkies 有浏览器客户端
+# （或判断不出来）时拒绝自己写。pin 存在 ~/.config/muelsyse/display.json。
+# 跟着 KWin 会话重启（PartOf）；启动时 KWin 还没就绪也没关系，pin 会按退避重试再应用。
+# 停掉它即退回各方自己改输出的老行为。
+[Unit]
+Description=Muelsyse virtual display authority
+After=remote-desktop-wayland.service
+PartOf=remote-desktop-wayland.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I %h/.local/libexec/muelsyse-displayd.py
+Restart=on-failure
+RestartSec=2
+MemoryMax=64M
+MemorySwapMax=0
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

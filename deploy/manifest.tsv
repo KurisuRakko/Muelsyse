@@ -57,6 +57,13 @@ config/remote-desktop-selkies.env.example	~/.config/selkies/remote-desktop.env	0
 systemd/muelsyse-imecaret.service	~/.config/systemd/user/muelsyse-imecaret.service	0644	user	copy	unit:muelsyse-imecaret.service
 scripts/muelsyse-imecaret.py	~/.local/libexec/muelsyse-imecaret.py	0755	user	copy	unit:muelsyse-imecaret.service
 
+# --- 虚拟显示器共享层（muelsyse-displayd，Virtual-0 的 mode/scale 统一由它决定）---
+systemd/muelsyse-displayd.service	~/.config/systemd/user/muelsyse-displayd.service	0644	user	copy	unit:muelsyse-displayd.service
+scripts/muelsyse-displayd.py	~/.local/libexec/muelsyse-displayd.py	0755	user	copy	unit:muelsyse-displayd.service
+scripts/muelsyse-display	~/.local/bin/muelsyse-display	0755	user	copy	none
+scripts/muelsyse-display-menu	~/.local/libexec/muelsyse-display-menu	0755	user	copy	none
+desktop/muelsyse-display.desktop	~/.local/share/applications/muelsyse-display.desktop	0644	user	render	none
+
 # --- Sunshine/Moonlight 旁路（sunshine/）---
 sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-nvenc-prep.conf	~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-nvenc-prep.conf	0644	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service
 sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-override.conf	~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-override.conf	0644	user	render	unit:app-dev.lizardbyte.app.Sunshine.service

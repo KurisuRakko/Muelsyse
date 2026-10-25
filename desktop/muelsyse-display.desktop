@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=显示器设置（Muelsyse）
+Name[en]=Muelsyse Display
+Comment=调整远程桌面虚拟显示器的分辨率与缩放
+Exec=@HOME@/.local/libexec/muelsyse-display-menu
+Icon=video-display
+Categories=Settings;System;
+Terminal=false
