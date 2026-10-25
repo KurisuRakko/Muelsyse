@@ -57,6 +57,8 @@ PlasmoidItem {
     property int selH: 0
     property int selScaleIdx: 0
 
+    property bool forceMode: false     // one-shot: next apply passes --force
+    property real applyFromScale: 0    // scale when the running set started
     property bool busy: false          // a set/pin/follow/release is running
     property string busyCmd: ""
     property string busyKind: ""       // set | pin | follow | release
@@ -108,6 +110,7 @@ PlasmoidItem {
         if (root.expanded) {
             if (!busy) {
                 userEdited = false
+                forceMode = false
                 resultText = ""
                 resultIsError = false
                 syncSelection()
@@ -258,10 +261,12 @@ PlasmoidItem {
     }
 
     function applySelection() {
-        if (!selValid || !selChanged || webBusy) {
+        if (!selValid || !selChanged || (webBusy && !forceMode)) {
             return
         }
-        run("set", "set " + selW + "x" + selH + " --scale " + scaleArgs[selScaleIdx])
+        applyFromScale = curScale
+        run("set", "set " + selW + "x" + selH + " --scale " + scaleArgs[selScaleIdx]
+            + (forceMode ? " --force" : ""))
     }
 
     function setPinned(on) {
@@ -290,13 +295,13 @@ PlasmoidItem {
         const reason = sp < 0 ? rest : rest.slice(0, sp)
         const detail = sp < 0 ? "" : rest.slice(sp + 1)
         if (reason === "selkies_active") {
-            return "网页端正有人连着，请在网页端侧栏改分辨率，或先关掉网页端"
+            return "网页端正有人连着，请在网页端侧栏改分辨率，或先关掉网页端；也可以勾选「强制修改」"
         } else if (reason === "pinned") {
             return "当前已锁定，先改回跟随或直接在这里改"
         } else if (reason === "leased:sunshine") {
-            return "Moonlight 正在串流（Sunshine 租约），结束后再改，或先释放租约"
+            return "Moonlight 正在串流（Sunshine 租约），结束后再改，或先释放租约；也可以勾选「强制修改」"
         } else if (reason.startsWith("leased:")) {
-            return reason.slice("leased:".length) + " 持有租约，结束后再改，或先释放租约"
+            return reason.slice("leased:".length) + " 持有租约，结束后再改，或先释放租约；也可以勾选「强制修改」"
         } else if (reason === "verify_failed") {
             return "切换后校验失败，已恢复原设置"
         } else if (reason === "busy") {
@@ -328,13 +333,19 @@ PlasmoidItem {
             } else if (out.startsWith("unchanged")) {
                 resultText = "已经是这个设置"
             } else if (m) {
+                // UU reads the logical size once per controller connection and
+                // only rebuilds on a frame-size change, so a new scale needs a reconnect.
+                const scaleChanged = Math.abs(parseFloat(m[3]) - applyFromScale) > 0.005
                 resultText = "已切换到 " + m[1] + "×" + m[2] + "，缩放 " + pct(parseFloat(m[3]))
-                    + (wasUu ? "\nUU 画面若卡住请断开重连" : "")
+                    + (!wasUu ? ""
+                       : scaleChanged ? "\n缩放变了：UU 要断开重连一次，鼠标才会对准"
+                       : "\nUU 画面若卡住请断开重连")
             } else {
                 resultText = "已应用：" + (out || "完成")
             }
             if (kind === "set") {
                 userEdited = false
+                forceMode = false
             }
         } else if (code === 3) {
             daemonDown = true
@@ -589,9 +600,22 @@ PlasmoidItem {
                 visible: root.statusKnown && root.webBusy
                 wrapMode: Text.Wrap
                 color: Kirigami.Theme.neutralTextColor
-                text: root.clients === "yes"
-                      ? "网页端正有人连着，改不了；请在网页端侧栏改，或先关掉网页端"
-                      : "确认不了网页端有没有人在看，暂时改不了；稍后再试"
+                text: root.forceMode
+                      ? "强制修改：网页端画面可能卡住，或被网页端窗口改回去；刷新网页端即可恢复"
+                      : root.clients === "yes"
+                      ? "网页端正有人连着，改不了；请在网页端侧栏改、先关掉网页端，或勾选「强制修改」"
+                      : "确认不了网页端有没有人在看，暂时改不了；稍后再试，或勾选「强制修改」"
+            }
+            PlasmaComponents3.CheckBox {
+                Layout.fillWidth: true
+                visible: root.statusKnown
+                enabled: root.controlsEnabled
+                text: "强制修改（网页端有人或有租约也照改，只管下一次应用）"
+                checked: root.forceMode
+                onToggled: {
+                    root.forceMode = checked
+                    checked = Qt.binding(() => root.forceMode)
+                }
             }
             PlasmaComponents3.Label {
                 Layout.fillWidth: true
@@ -615,7 +639,8 @@ PlasmoidItem {
                 PlasmaComponents3.Button {
                     icon.name: "dialog-ok-apply"
                     text: "应用"
-                    enabled: root.controlsEnabled && root.selValid && root.selChanged && !root.webBusy
+                    enabled: root.controlsEnabled && root.selValid && root.selChanged
+                        && (!root.webBusy || root.forceMode)
                     onClicked: root.applySelection()
                 }
             }
