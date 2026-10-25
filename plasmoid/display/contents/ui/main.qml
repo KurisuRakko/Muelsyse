@@ -58,7 +58,6 @@ PlasmoidItem {
     property int selScaleIdx: 0
 
     property bool forceMode: false     // one-shot: next apply passes --force
-    property real applyFromScale: 0    // scale when the running set started
     property bool busy: false          // a set/pin/follow/release is running
     property string busyCmd: ""
     property string busyKind: ""       // set | pin | follow | release
@@ -264,7 +263,6 @@ PlasmoidItem {
         if (!selValid || !selChanged || (webBusy && !forceMode)) {
             return
         }
-        applyFromScale = curScale
         run("set", "set " + selW + "x" + selH + " --scale " + scaleArgs[selScaleIdx]
             + (forceMode ? " --force" : ""))
     }
@@ -333,13 +331,11 @@ PlasmoidItem {
             } else if (out.startsWith("unchanged")) {
                 resultText = "已经是这个设置"
             } else if (m) {
-                // UU reads the logical size once per controller connection and
-                // only rebuilds on a frame-size change, so a new scale needs a reconnect.
-                const scaleChanged = Math.abs(parseFloat(m[3]) - applyFromScale) > 0.005
+                // displayd restarts UU on a scale change: UU keeps its stale
+                // logical size otherwise, even across reconnects.
                 resultText = "已切换到 " + m[1] + "×" + m[2] + "，缩放 " + pct(parseFloat(m[3]))
-                    + (!wasUu ? ""
-                       : scaleChanged ? "\n缩放变了：UU 要断开重连一次，鼠标才会对准"
-                       : "\nUU 画面若卡住请断开重连")
+                    + (/ uu-restarted$/.test(out) ? "\nUU 已重启，请重新连接"
+                       : wasUu ? "\nUU 画面若卡住请断开重连" : "")
             } else {
                 resultText = "已应用：" + (out || "完成")
             }

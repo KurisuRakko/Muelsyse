@@ -86,6 +86,13 @@ args = sys.argv[1:]
 assert args[0] == "--user", args
 if st.get("systemctl_fail"):
     sys.exit(1)
+if args[-1] == "uuremote-test.service":
+    uu = load().get("uu_unit", "inactive")
+    if args[1] == "is-active":
+        print(uu); sys.exit(0 if uu == "active" else 3)
+    if args[1] == "restart":
+        record("uu-restart", args[-1]); sys.exit(0)
+    sys.exit(2)
 if args[1] == "is-active":
     print(st["active"]); sys.exit(0 if st["active"] == "active" else 3)
 if args[1:5] == ["show", "-p", "MainPID", "--value"]:
@@ -183,6 +190,8 @@ class FakeAdapter:
                     json.dump(st, f)
                 os.replace(tmp, self.state_path)
             return {"ok": True}
+        if req["op"] == "cursor":
+            return {"ok": True, "hidden": req["hidden"], "outputs": [{"index": 7, "name": "Virtual-0", "hidden": req["hidden"]}]}
         return {"ok": False, "error": "unknown op"}
 
     def close(self):
@@ -219,6 +228,9 @@ class DisplaydTest(unittest.TestCase):
             "MUELSYSE_DISPLAY_PW_DUMP": self.bins["pw-dump"],
             "MUELSYSE_DISPLAY_PIN_RETRY_S": "0.3",
             "MUELSYSE_DISPLAY_BACKOFF_MAX_S": "0.5",
+            # 光标跟随和 UU 重启默认关掉，免得干扰别的用例；专门的用例里再打开。
+            "MUELSYSE_DISPLAY_CURSOR_S": "0",
+            "MUELSYSE_DISPLAY_UU_UNIT": "",
             "FAKE_DISPLAY_STATE": self.state_path,
         })
         self.proc = None
@@ -340,6 +352,90 @@ class DisplaydTest(unittest.TestCase):
         self.assertFalse(self.raw({"op": "status"})["uu_watching"])
         self.patch(uu="running", pw_fail=True)
         self.assertFalse(self.raw({"op": "status"})["uu_watching"])
+
+    # ---- UU 重启与光标跟随 ----
+
+    def restart_with(self, **env):
+        self.stop_daemon()
+        self.env.update(env)
+        self.start_daemon()
+
+    def test_scale_change_restarts_uu(self):
+        self.restart_with(MUELSYSE_DISPLAY_UU_UNIT="uuremote-test.service")
+        self.patch(uu_unit="active")
+        rc, out, _ = self.cli("set", "--scale", "1.5")
+        self.assertEqual((rc, out), (0, "applied 3840x2160 scale 1.5 uu-restarted"))
+        self.assertEqual(self.calls("uu-restart"), [["uu-restart", "uuremote-test.service"]])
+        # 只改分辨率：UU 会自己重建，不重启
+        reply = self.req(w=1920, h=1080)
+        self.assertEqual(reply["result"], "applied")
+        self.assertFalse(reply["uu_restarted"])
+        self.assertNotIn("old_scale", reply)
+        # UU 没在跑：不重启
+        self.patch(uu_unit="inactive")
+        self.assertFalse(self.req(scale=2.0)["uu_restarted"])
+        self.assertEqual(len(self.calls("uu-restart")), 1)
+        # 没变化
+        self.assertNotIn("uu_restarted", self.req(scale=2.0))
+
+    def cursor_ops(self):
+        out = []
+        for r in list(self.adapter.requests):
+            if r["op"] == "cursor" and (not out or out[-1] != r["hidden"]):
+                out.append(r["hidden"])
+        return out
+
+    def wait_for(self, pred, timeout=5.0):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return
+            time.sleep(0.05)
+        self.fail("等不到条件；cursor ops=%r\n%s" % (self.cursor_ops(), self.daemon_log()))
+
+    def test_cursor_follows_uu(self):
+        self.restart_with(MUELSYSE_DISPLAY_CURSOR_S="0.1")
+        # 启动时状态不明 → 先恢复成画光标
+        self.wait_for(lambda: self.cursor_ops() == [False])
+        self.patch(uu="running")
+        self.wait_for(lambda: self.cursor_ops() == [False, True])
+        self.assertTrue(self.raw({"op": "status"})["cursor_hidden"])
+        self.assertTrue(all(r.get("output_index") == 7 for r in self.adapter.requests if r["op"] == "cursor"))
+        # 网页端有人：交给 Selkies，不发
+        self.patch(selkies={"active": "active", "journal": [CONNECT], "ss": "ESTAB x\n"})
+        self.wait_for(lambda: self.raw({"op": "status"})["cursor_hidden"] is None)
+        n = len(self.adapter.requests)
+        time.sleep(0.5)
+        self.assertEqual([r for r in self.adapter.requests[n:] if r["op"] == "cursor"], [])
+        # 网页端走光：重新隐藏（Selkies 走时会把光标恢复）
+        self.patch(selkies={"active": "active", "journal": [CONNECT, GONE]})
+        n = len(self.adapter.requests)
+        self.wait_for(lambda: any(r["op"] == "cursor" and r["hidden"] for r in self.adapter.requests[n:]))
+        # Sunshine 租约：要画光标
+        self.assertTrue(self.raw({"op": "lease", "name": "sunshine", "ttl_s": 60})["ok"])
+        self.wait_for(lambda: self.cursor_ops()[-1] is False)
+        self.raw({"op": "release", "name": "sunshine"})
+        self.wait_for(lambda: self.cursor_ops()[-1] is True)
+        # UU 走了：恢复
+        self.patch(uu="suspended")
+        self.wait_for(lambda: self.cursor_ops()[-1] is False)
+        self.assertFalse(self.raw({"op": "status"})["cursor_hidden"])
+
+    def test_cursor_restored_on_exit(self):
+        self.restart_with(MUELSYSE_DISPLAY_CURSOR_S="0.1")
+        self.patch(uu="running")
+        self.wait_for(lambda: self.cursor_ops()[-1:] == [True])
+        self.stop_daemon()
+        self.assertFalse(self.adapter.requests[-1]["hidden"])
+        self.assertIn("退出前恢复光标", self.daemon_log())
+        self.start_daemon()
+
+    def test_cursor_adapter_error_logged_once(self):
+        self.patch(uu="running")
+        self.adapter.close()
+        self.restart_with(MUELSYSE_DISPLAY_CURSOR_S="0.1")
+        time.sleep(0.6)
+        self.assertEqual(self.daemon_log().count("光标跟随失败"), 1)
 
     def test_new_size_prepares_then_switches(self):
         rc, out, err = self.cli("set", "1600x900", "--scale", "1.5")

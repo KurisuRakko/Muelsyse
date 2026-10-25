@@ -22,6 +22,15 @@ socket 协议：Unix stream，只收同 UID；每行一个 JSON 请求，回一�
     {"op":"lease","name":N,"ttl_s":T}  /  {"op":"release","name":N}
 被拒时回 {"ok":false,"reason":"invalid|pinned|leased:<name>|selkies_active|verify_failed|busy|backend_error","detail":"…"}。
 
+光标跟随：虚拟输出没有硬件光标层，KWin 把软件光标画进合成结果，所以只开 UU 时视频里有服务器
+光标，加上 UU 控制端自己画的指针就是两个。Selkies 抓屏时自己经 adapter `cursor` 关掉这一层、断开时
+恢复。本进程每隔几秒看一次：UU 在看、网页端确认没人、没有 Sunshine 租约 → 让 KWin 不画；UU 走了
+→ 恢复；网页端有人或拿不准 → 不碰，交给 Selkies。
+
+UU 重启：UU 的 portal 会话只在开头读一次逻辑尺寸，之后控制端重连也沿用同一个会话，只有帧尺寸
+变了才重建。只改缩放时帧尺寸不变，鼠标就按旧尺寸换算、点歪。所以缩放一变（UU 服务在跑时）就重启
+UU 服务，下次连上按新缩放建会话；控制端要手动重连。回复里的 uu_restarted 告诉前端。
+
 配置全走环境变量（见 Config），测试时指向临时 KWin 或假命令。
 """
 
@@ -58,6 +67,10 @@ LEASE_MAX_TTL_S = 7 * 24 * 3600
 LEASE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 STARTUP_BACKOFF_MAX_S = 60.0
 PORT_RECHECK_S = 0.4
+CURSOR_INTERVAL_S = 3.0
+# 已经隐藏时也隔一阵重发一次，补上两次检查之间 Selkies 连上又走、把光标恢复了的情况。
+CURSOR_REASSERT_S = 30.0
+UU_RESTART_TIMEOUT_S = 30.0
 
 # Selkies 日志里的客户端事件标记（selkies/src/selkies/selkies.py）：
 # - 连上：ws_handler 在通过限速检查、把连接加进 self.clients 之前打
@@ -104,6 +117,8 @@ class Config:
         self.state = env.get("MUELSYSE_DISPLAY_STATE") or os.path.join(
             os.path.expanduser("~"), ".config", "muelsyse", "display.json")
         self.selkies_unit = env.get("MUELSYSE_DISPLAY_SELKIES_UNIT") or "remote-desktop-selkies.service"
+        # 缩放变了要重启的 UU unit；设成空串就不重启。
+        self.uu_unit = env.get("MUELSYSE_DISPLAY_UU_UNIT", "uuremote-native.service")
         self.kscreen_doctor = env.get("MUELSYSE_DISPLAY_KSCREEN_DOCTOR") or "kscreen-doctor"
         self.journalctl = env.get("MUELSYSE_DISPLAY_JOURNALCTL") or "journalctl"
         self.ss = env.get("MUELSYSE_DISPLAY_SS") or "ss"
@@ -113,6 +128,8 @@ class Config:
         self.queue_timeout = float(env.get("MUELSYSE_DISPLAY_QUEUE_S") or 15.0)
         self.pin_retry = float(env.get("MUELSYSE_DISPLAY_PIN_RETRY_S") or 60.0)
         self.backoff_max = float(env.get("MUELSYSE_DISPLAY_BACKOFF_MAX_S") or STARTUP_BACKOFF_MAX_S)
+        # 光标跟随的检查间隔；<= 0 关掉。
+        self.cursor_interval = float(env.get("MUELSYSE_DISPLAY_CURSOR_S") or CURSOR_INTERVAL_S)
         # kscreen-doctor 要连目标 KWin；session bus 原样继承。KSCREEN_BACKEND_INPROCESS 让它在本进程里
         # 直接连 WAYLAND_DISPLAY，不经 session bus 上的 KScreen 后端服务（那个服务可能是按别的
         # WAYLAND_DISPLAY 起来的，会读写错屏）。
@@ -378,6 +395,10 @@ class Daemon:
         self.last_change = None
         self.server = None
         self.tasks = set()
+        # KWin 软件光标是否被我们关掉：None = 不知道（启动时、刚交还给 Selkies 后），会按需要重发。
+        self.cursor_hidden = None
+        self.cursor_sent_at = 0.0
+        self.cursor_error = None
         # 请求分发表；阶段 2 的 subscribe / capture_begin 等往这里加。
         self.ops = {
             "status": self.op_status,
@@ -450,6 +471,7 @@ class Daemon:
             "leases": [{"name": n, "expires_at": round(exp, 3)} for n, exp in sorted(self.live_leases().items())],
             "selkies": {"service_active": active, "clients": clients},
             "uu_watching": await uu_watching(self.cfg),
+            "cursor_hidden": self.cursor_hidden,
             "last_change": self.last_change,
         }
 
@@ -511,6 +533,10 @@ class Daemon:
             reply = await self._apply_locked(size, scale, source, force)
         finally:
             self.lock.release()
+        old_scale = reply.pop("old_scale", None)
+        if reply["result"] == "applied":
+            reply["uu_restarted"] = (old_scale is not None and not same_scale(old_scale, reply["scale"])
+                                     and await self.restart_uu())
         if update_pin or (self.policy == "pinned" and source in ("app", "cli")):
             self.set_pin({"w": reply["mode"]["w"], "h": reply["mode"]["h"], "scale": reply["scale"]})
         return reply
@@ -542,13 +568,33 @@ class Daemon:
             self._record(source, old, (w, h, target_scale), "applied", started)
             log.info("变更 %s applied（%dms）", desc, self._ms(started))
             await self._warn_if_selkies_joined(force)
-            return {"ok": True, "result": "applied", "mode": mode_view(after), "scale": after["scale"]}
+            return {"ok": True, "result": "applied", "mode": mode_view(after), "scale": after["scale"],
+                    "old_scale": old[2]}
 
         got = f"{after['w']}x{after['h']}@{fmt_scale(after['scale'])}"
         rollback = await self._rollback(old)
         self._record(source, old, (w, h, target_scale), "verify_failed", started)
         log.warning("变更 %s verify_failed（%dms）: 回读 %s，%s", desc, self._ms(started), got, rollback)
         raise Rejected("verify_failed", f"回读是 {got}，{rollback}")
+
+    async def restart_uu(self):
+        """UU 服务在跑就重启它（见模块说明），返回是否重启了；失败只记日志。"""
+        unit = self.cfg.uu_unit
+        if not unit:
+            return False
+        try:
+            _rc, out, _err = await run([self.cfg.systemctl, "--user", "is-active", unit], COMMAND_TIMEOUT_S)
+            if out.strip() not in ("active", "activating", "reloading"):
+                return False
+            rc, _out, err = await run([self.cfg.systemctl, "--user", "restart", unit], UU_RESTART_TIMEOUT_S)
+        except BackendError as e:
+            log.warning("重启 %s 失败: %s", unit, e.detail)
+            return False
+        if rc != 0:
+            log.warning("重启 %s 失败（退出码 %d）: %s", unit, rc, err.strip()[:200])
+            return False
+        log.info("缩放变了，已重启 %s；UU 控制端要重新连接", unit)
+        return True
 
     async def _rollback(self, old):
         """写回旧 mode/scale，返回给人看的结果说明。"""
@@ -709,7 +755,72 @@ class Daemon:
             reply = await self._apply_locked((pin["w"], pin["h"]), pin["scale"], "app", False)
         finally:
             self.lock.release()
+        old_scale = reply.pop("old_scale", None)
+        if old_scale is not None and not same_scale(old_scale, reply["scale"]):
+            await self.restart_uu()
         return reply["result"]
+
+    # ---- 光标跟随 ----
+
+    async def cursor_wanted(self):
+        """True = 该让 KWin 不画光标；False = 该画；None = 网页端有人或拿不准，交给 Selkies。"""
+        if not await uu_watching(self.cfg):
+            return False
+        if any(name.startswith("sunshine") for name in self.live_leases()):
+            return False
+        _active, clients = await self.selkies.check()
+        return True if clients == "no" else None
+
+    async def set_cursor_hidden(self, hidden):
+        index = await self.backend.output_index()
+        reply = await self.backend.adapter({"op": "cursor", "hidden": hidden, "output_index": index})
+        if not reply.get("ok"):
+            raise BackendError(f"adapter cursor 失败: {reply.get('error')}")
+
+    async def cursor_tick(self, now):
+        want = await self.cursor_wanted()
+        if want and not self.cursor_hidden:
+            # 发出去之前先记「不知道」：发到一半被取消时退出路径仍会去恢复。
+            self.cursor_hidden = None
+        if want is None:
+            if self.cursor_hidden:
+                log.info("网页端在用，光标交给 Selkies")
+            self.cursor_hidden = None
+            return
+        if want == self.cursor_hidden and not (want and now - self.cursor_sent_at >= CURSOR_REASSERT_S):
+            return
+        await self.set_cursor_hidden(want)
+        if want != self.cursor_hidden:
+            log.info("只有 UU 在看，KWin 不再把光标画进画面" if want else "KWin 恢复把光标画进画面")
+        self.cursor_hidden = want
+        self.cursor_sent_at = now
+
+    async def cursor_loop(self):
+        while True:
+            try:
+                await self.cursor_tick(time.monotonic())
+                if self.cursor_error is not None:
+                    log.info("光标跟随恢复正常")
+                    self.cursor_error = None
+            except BackendError as e:
+                if e.detail != self.cursor_error:
+                    log.warning("光标跟随失败: %s", e.detail)
+                    self.cursor_error = e.detail
+            except Exception as e:  # 后台循环不能因为意外异常悄悄停掉
+                if repr(e) != self.cursor_error:
+                    log.exception("光标跟随出错")
+                    self.cursor_error = repr(e)
+            await asyncio.sleep(self.cfg.cursor_interval)
+
+    async def restore_cursor(self):
+        """退出时把我们关掉的光标还回去；KWin 可能已经先走了，失败不管。"""
+        if self.cursor_hidden is False or self.cfg.cursor_interval <= 0:
+            return
+        try:
+            await asyncio.wait_for(self.set_cursor_hidden(False), ADAPTER_TIMEOUT_S)
+            log.info("退出前恢复光标")
+        except (BackendError, asyncio.TimeoutError):
+            pass
 
     def spawn(self, coro):
         task = asyncio.create_task(coro)
@@ -722,6 +833,8 @@ class Daemon:
         log.info("socket %s，输出 %s@%s，policy %s", self.cfg.socket, self.cfg.output, self.cfg.wayland, self.policy)
         if self.pin is not None:
             self.spawn(self.restore_pin())
+        if self.cfg.cursor_interval > 0:
+            self.spawn(self.cursor_loop())
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -730,8 +843,13 @@ class Daemon:
             await stop.wait()
         finally:
             self.close_socket()
-            for task in list(self.tasks):
+            tasks = list(self.tasks)
+            for task in tasks:
                 task.cancel()
+            # 等它们真的停下：正在发「隐藏」的那一拍被取消时 adapter 可能已经执行了，所以状态里记的是
+            # 「不知道」（None）也要恢复，见 restore_cursor。
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self.restore_cursor()
         log.info("退出")
 
 

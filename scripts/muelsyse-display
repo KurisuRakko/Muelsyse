@@ -164,7 +164,9 @@ def main(argv=None):
         print(json.dumps(reply, ensure_ascii=False) if opts.json else describe_status(reply))
     elif "result" in reply:
         mode = reply["mode"]
-        print(f"{reply['result']} {mode['w']}x{mode['h']} scale {fmt_scale(reply['scale'])}")
+        # uu-restarted：缩放变了，displayd 重启了 UU，控制端要重新连接。
+        print(f"{reply['result']} {mode['w']}x{mode['h']} scale {fmt_scale(reply['scale'])}"
+              + (" uu-restarted" if reply.get("uu_restarted") else ""))
     elif opts.cmd == "follow":
         print("follow")
     elif opts.cmd == "lease":

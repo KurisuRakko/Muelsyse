@@ -165,13 +165,11 @@ if [ "$rc" -eq 0 ]; then
 		else
 			msg="已应用：${out:-完成}"
 		fi
-		# UU 每次连上只读一次缩放后的逻辑尺寸，只改缩放不会触发它重建，鼠标会错位。
-		if [ "$uu_watching" = true ]; then
-			if [ "${cmd[1]:-}" = --scale ]; then
-				msg+=$'\n'"缩放变了：UU 要断开重连一次，鼠标才会对准"
-			else
-				msg+=$'\n'"UU 远程画面若卡住，请断开重连"
-			fi
+		# 缩放变了时 displayd 会重启 UU（否则 UU 一直按旧尺寸换算鼠标），CLI 输出带 uu-restarted。
+		if [[ $out == *" uu-restarted" ]]; then
+			msg+=$'\n'"UU 已重启，请重新连接"
+		elif [ "$uu_watching" = true ]; then
+			msg+=$'\n'"UU 远程画面若卡住，请断开重连"
 		fi
 		kdialog --title "$TITLE" --passivepopup "$msg" 5
 		;;
