@@ -63,6 +63,10 @@ scripts/muelsyse-displayd.py	~/.local/libexec/muelsyse-displayd.py	0755	user	cop
 scripts/muelsyse-display	~/.local/bin/muelsyse-display	0755	user	copy	none
 scripts/muelsyse-display-menu	~/.local/libexec/muelsyse-display-menu	0755	user	copy	none
 desktop/muelsyse-display.desktop	~/.local/share/applications/muelsyse-display.desktop	0644	user	render	none
+# 托盘小部件：plasmashell 只在加载时读 QML，改了要在托盘设置里把它关掉再打开。
+# 不能重启 plasmashell：start-wayland-session.sh 里任一进程退出都会结束整个会话。
+plasmoid/display/metadata.json	~/.local/share/plasma/plasmoids/org.rakko.muelsysedisplay/metadata.json	0644	user	copy	none
+plasmoid/display/contents/ui/main.qml	~/.local/share/plasma/plasmoids/org.rakko.muelsysedisplay/contents/ui/main.qml	0644	user	copy	none
 
 # --- Sunshine/Moonlight 旁路（sunshine/）---
 sunshine/systemd/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-nvenc-prep.conf	~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/muelsyse-nvenc-prep.conf	0644	user	copy	unit:app-dev.lizardbyte.app.Sunshine.service

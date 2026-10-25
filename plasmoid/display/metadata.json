@@ -1,0 +1,22 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Rakko"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Change the remote desktop virtual display's resolution and scale (front end for muelsyse-display)",
+        "Description[zh_CN]": "调整远程桌面虚拟显示器的分辨率和缩放（muelsyse-display 的前端）",
+        "Icon": "video-display",
+        "Id": "org.rakko.muelsysedisplay",
+        "License": "MIT",
+        "Name": "显示器",
+        "Name[en]": "Muelsyse Display",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "Hardware"
+}
