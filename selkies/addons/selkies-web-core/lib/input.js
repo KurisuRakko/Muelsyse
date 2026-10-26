@@ -45,8 +45,8 @@
  * `<video>` box) where the stream has a fixed size, and through the element's
  * window math otherwise; motion is coalesced to one send per animation frame.
  * Under pointer lock the payload is a relative delta, scaled to server pixels
- * and quantized with a carried remainder. Gaming mode is document fullscreen
- * plus pointer and keyboard lock. Touch is direct (tap, drag, long-press right
+ * and quantized with a carried remainder. Any stream fullscreen locks the
+ * keyboard; gaming mode adds pointer lock. Touch is direct (tap, drag, long-press right
  * click, two-finger scroll) or a trackpad emulation. Wheel events are
  * classified as discrete wheel or trackpad and accumulated in fractional
  * notches so no distance is lost. The server-drawn cursor is painted on a
@@ -1683,7 +1683,7 @@ export class Input {
      */
     static _rawMotionRefused = false;
 
-    /** Set once the page has been told that nothing holds Escape in gaming mode. */
+    /** Set once the page has been told that nothing holds Escape in fullscreen. */
     static _keyboardLockNoticed = false;
 
     /** Whether the next lock request asks for raw movement. */
@@ -5076,18 +5076,20 @@ export class Input {
     }
 
     /**
-     * Fullscreen change: arms pointer and keyboard lock for gaming mode, ends
-     * gaming mode on exit, and releases every key on both sides since a
-     * transition can eat keyups (Escape on exit, the Ctrl+Shift+F chord on
-     * entry).
+     * Fullscreen change: locks the keyboard for any stream fullscreen with an
+     * input context, and the pointer too in gaming mode; on exit it hands the
+     * keyboard back, ends gaming mode, and releases every key on both sides
+     * since a transition can eat keyups (Escape on exit, the Ctrl+Shift+F
+     * chord on entry).
      */
     _onFullscreenChange() {
         if (this._isStreamFullscreen()) {
-            if (this.inputAttached && this.gamingMode) {
-                this._armPointerLock();
+            if (this.inputAttached) {
+                if (this.gamingMode) this._armPointerLock();
                 this.requestKeyboardLock();
             }
         } else {
+            this.releaseKeyboardLock();
             this._setGamingMode(false);
             if (this._isStreamLocked()) document.exitPointerLock();
         }
@@ -5232,8 +5234,8 @@ export class Input {
         // Set before the locks below, which take it as the grant to hold the pointer.
         this.inputAttached = true;
 
-        if (this._isStreamFullscreen() && this.gamingMode) {
-             this._armPointerLock();
+        if (this._isStreamFullscreen()) {
+             if (this.gamingMode) this._armPointerLock();
              this.requestKeyboardLock();
         } else if (this._isStreamLocked()) {
              this._pointerLock();
@@ -5302,6 +5304,8 @@ export class Input {
              this._sendMouseState();
         }
         this.inputAttached = false;
+        // Without a context nothing would receive the keys a lock holds back.
+        this.releaseKeyboardLock();
         this._exitPointerLock();
     }
 
@@ -5315,8 +5319,9 @@ export class Input {
     }
 
     /**
-     * Fullscreen with no lock, leaving the pointer and the keyboard to the
-     * browser: the dashboard button and the Ctrl+Shift+F chord land here. The
+     * Fullscreen that leaves the pointer to the browser and locks the keyboard
+     * once the transition lands (see `_onFullscreenChange`): the dashboard
+     * button and the Ctrl+Shift+F chord land here. The
      * whole document goes fullscreen, not the stream container: the dashboard
      * overlay is a body-level sibling, which container fullscreen would hide.
      */
@@ -5346,10 +5351,10 @@ export class Input {
     }
 
     /**
-     * Enters gaming mode: fullscreen that also holds the pointer and the
-     * keyboard, so a game sees Escape, Alt+Tab and raw motion instead of the
-     * browser. A locked keyboard delivers a short Escape to the session, so
-     * holding it is what leaves this mode.
+     * Enters gaming mode: fullscreen that also holds the pointer, so a game
+     * sees raw motion instead of the browser. The keyboard is locked as in any
+     * stream fullscreen: a short Escape reaches the session, so holding it is
+     * what leaves this mode.
      *
      * A lock requested before the transition would be cancelled by it, so the
      * fullscreenchange handler arms both once fullscreen lands, still inside
@@ -5371,24 +5376,30 @@ export class Input {
         this.requestKeyboardLock();
     }
 
-    /** Publishes the mode to `ongamingmode`, releasing the keyboard as it ends. */
+    /**
+     * Publishes the mode to `ongamingmode`. The keyboard lock is fullscreen's,
+     * not the mode's, so leaving fullscreen is what releases it.
+     */
     _setGamingMode(active) {
         if (this.gamingMode === active) return;
         this.gamingMode = active;
-        if (!active) {
-            this.releaseKeyboardLock();
-        }
         if (this.ongamingmode) {
             this.ongamingmode(active);
         }
     }
 
-    /** Locks the system keys the browser would otherwise intercept, for gaming mode alone, where the Keyboard Lock API exists. */
+    /**
+     * Locks every key the browser would otherwise intercept (Escape, Alt+Tab,
+     * Ctrl+W and the rest) while the stream is fullscreen and an input context
+     * is attached, where the Keyboard Lock API exists. With Escape locked the
+     * browser hands a short press to the page and leaves fullscreen only on a
+     * held one.
+     */
     requestKeyboardLock() {
-        if (!this.gamingMode || !document.fullscreenElement) return;
+        if (!this.inputAttached || !this._isStreamFullscreen()) return;
         if (navigator.keyboard && 'lock' in navigator.keyboard) {
-            const keys = [ "AltLeft", "AltRight", "Tab", "Escape", "MetaLeft", "MetaRight", "ContextMenu" ];
-            navigator.keyboard.lock(keys).catch(() => {});
+            // No key list: lock everything the engine lets a page lock.
+            navigator.keyboard.lock().catch(() => {});
             return;
         }
         this._noticeKeyboardLockUnavailable();
@@ -5397,8 +5408,8 @@ export class Input {
     /**
      * Says once per page that nothing holds Escape: without the Keyboard Lock
      * API the browser leaves fullscreen and the pointer lock on a single
-     * press, which ends gaming mode, and the page can neither prevent that nor
-     * see the key. Brave has the API but its Shields withhold it by default
+     * press, which ends gaming mode too, and the page can neither prevent that
+     * nor see the key. Brave has the API but its Shields withhold it by default
      * with the rest of the keyboard fingerprinting surface, so the remedy is
      * named there. The notice goes to `onnotice` with a code the dashboards
      * translate and the English text as their fallback.
@@ -5409,9 +5420,9 @@ export class Input {
         const brave = typeof navigator !== 'undefined' && !!navigator.brave;
         const code = brave ? 'keyboardLockBlockedByShields' : 'keyboardLockUnavailable';
         const text = brave
-            ? "Brave's Shields block the keyboard lock, so a single Escape leaves gaming mode. "
+            ? "Brave's Shields block the keyboard lock, so a single Escape leaves fullscreen. "
               + "Allow the keyboard API for this site under the Shields fingerprinting controls to hold Escape instead."
-            : 'This browser offers no keyboard lock, so a single Escape leaves gaming mode instead of reaching the session.';
+            : 'This browser offers no keyboard lock, so a single Escape leaves fullscreen instead of reaching the session.';
         console.warn('Input: ' + text);
         if (this.onnotice) this.onnotice(code, text);
     }

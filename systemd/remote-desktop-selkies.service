@@ -47,6 +47,10 @@ Environment=PIXELFLUX_KWIN_STATS=1
 Environment=AUTO_GPU=@MUELSYSE_AUTO_GPU@
 Environment=SELKIES_ENCODER=h264enc
 Environment=SELKIES_FRAMERATE=60-60
+# 像素预算关掉（0 = 不限）：4K 屏全屏 + 渲染倍率 200% 直接出原生 3840x2160。
+# 默认 2600x1440 是 UHD 630 跑满 60 fps 的实测上限，4K 会掉帧；卡了由用户在侧栏
+# 把渲染倍率调低（175/150）自己换帧率，单边仍受客户端 4080 上限约束。
+Environment=SELKIES_STREAM_PIXEL_BUDGET=0
 Environment=SELKIES_AUDIO_ENABLED=true
 Environment=SELKIES_AUDIO_ON_START=true
 # 前端可见性判据只看 |locked、不看 value：不带后缀的关闭仍会渲染开关，

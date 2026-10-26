@@ -15,7 +15,8 @@
 // string too. The `raw_pointer_motion` setting decides over the platform, on
 // either side, through the shared settings ladder and the core's setter, which
 // switches a lock already held rather than waiting for the next one. The lock belongs to gaming mode alone -- plain fullscreen
-// leaves the pointer to the browser so the dashboard stays usable -- and its
+// leaves the pointer to the browser so the dashboard stays usable, though it
+// locks every key so a short Escape reaches the session -- and its
 // caller guards the request (gaming mode, stream fullscreen, not already locked,
 // an input context attached); the request it re-runs after a refusal must pass those
 // guards again, since the page can leave fullscreen while the first one is still
@@ -443,7 +444,9 @@ function stage(ids, locked = null) {
     const element = makeElement('ok');
     reset(element);
     const events = [];
-    const keyboard = { calls: [], lock: (keys) => { keyboard.calls.push('lock'); return Promise.resolve(); },
+    // A key list would leave the rest (Ctrl+W, Ctrl+T, ...) to the browser.
+    const keyboard = { calls: [], lock: (keys) => { keyboard.calls.push(keys === undefined ? 'lock' : 'lock-some');
+                                                    return Promise.resolve(); },
                        unlock: () => keyboard.calls.push('unlock') };
     Object.defineProperty(globalThis, 'navigator', { value: { keyboard }, configurable: true });
     const requested = [];
@@ -465,11 +468,17 @@ function stage(ids, locked = null) {
     document.fullscreenElement = element;
     input._onFullscreenChange();
     await sleep(10);
-    check('plain fullscreen locks neither pointer nor keyboard',
-          element.calls.length === 0 && keyboard.calls.length === 0,
+    check('plain fullscreen locks every key but not the pointer',
+          element.calls.length === 0 && keyboard.calls.join(',') === 'lock',
           `${element.calls.join(',')} / ${keyboard.calls.join(',')}`);
 
     document.fullscreenElement = null;
+    input._onFullscreenChange();
+    check('leaving plain fullscreen hands the keyboard back',
+          keyboard.calls.join(',') === 'lock,unlock' && input.gamingMode === false && events.length === 0,
+          `kb=${keyboard.calls.join(',')} gaming=${input.gamingMode} events=${events.join(',')}`);
+    keyboard.calls.length = 0;
+
     input.enterGamingMode();
     await sleep(10);
     check('gaming mode asks for fullscreen and announces itself',
@@ -490,6 +499,26 @@ function stage(ids, locked = null) {
           input.gamingMode === false && events.join(',') === 'true,false'
           && keyboard.calls.join(',') === 'lock,unlock',
           `gaming=${input.gamingMode} events=${events.join(',')} kb=${keyboard.calls.join(',')}`);
+}
+{
+    // The keyboard lock follows the input context: a page holding none has no
+    // session to hand the held keys to.
+    const element = makeElement('ok');
+    reset(element);
+    const keyboard = { calls: [], lock: () => { keyboard.calls.push('lock'); return Promise.resolve(); },
+                       unlock: () => keyboard.calls.push('unlock') };
+    Object.defineProperty(globalThis, 'navigator', { value: { keyboard }, configurable: true });
+    const viewer = makeInput(element, false, false);
+    viewer.send = () => {};
+    viewer.resetKeyboard = () => {};
+    viewer._onFullscreenChange();
+    viewer.requestKeyboardLock();
+    check('no keyboard lock without an input context', keyboard.calls.length === 0, keyboard.calls.join(','));
+
+    document.fullscreenElement = null;
+    const outside = makeInput(element, false);
+    outside.requestKeyboardLock();
+    check('no keyboard lock outside fullscreen', keyboard.calls.length === 0, keyboard.calls.join(','));
 }
 {
     // An engine that refuses fullscreen must not leave the mode behind: the locks
