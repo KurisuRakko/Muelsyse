@@ -2168,13 +2168,16 @@ export class Input {
             code !== "MetaRight" && event.metaKey && !event.ctrlKey && !event.altKey) {
             if (this._keyDownList["MetaLeft"] || this._keyDownList["MetaRight"]) {
                 console.log(`macOS: Cmd+key detected for code '${code}'. Remapping Cmd to Ctrl.`);
+                // Control goes down before the Alt_L Command held is let go: an Alt
+                // press and release with no key between them is a lone Alt tap,
+                // which opens the menu bar and turns this key into its mnemonic.
+                this._sendKeyEvent(KeyTable.XK_Control_L, "ControlLeft", true);
                 if (this._keyDownList["MetaLeft"]) {
                     this._sendKeyEvent(this._keyDownList["MetaLeft"], "MetaLeft", false);
                 }
                 if (this._keyDownList["MetaRight"]) {
                     this._sendKeyEvent(this._keyDownList["MetaRight"], "MetaRight", false);
                 }
-                this._sendKeyEvent(KeyTable.XK_Control_L, "ControlLeft", true);
                 this._macCmdSwapped = true;
             }
         }

@@ -207,7 +207,7 @@ const ACTIONS = [
     { name: 'Cmd+C reaches the server as its Ctrl chord',
       engines: ['blink-mac', 'gecko-mac'],
       steps: [['down', 'MetaLeft'], ['down', 'KeyC', 'c']],
-      wire: `kd,${XK.Alt_L} ku,${XK.Alt_L} kd,${XK.Control_L} kd,99` },
+      wire: `kd,${XK.Alt_L} kd,${XK.Control_L} ku,${XK.Alt_L} kd,99` },
     // -- PC: AltGr is the level-3 shift and Alt is the action modifier, whether
     // -- or not the engine has an AltGraph flag to say so.
     { name: 'AltGr+L types the Polish l-stroke',
@@ -335,7 +335,18 @@ check('a soft modifier survives a physical key pressed under it',
 const cmdChord = [['down', 'MetaLeft'], ['down', 'KeyC', 'c']];
 const asCtrl = wire('blink-mac', cmdChord);
 check('Cmd+C reaches the server as its Ctrl chord while the setting is on',
-      asCtrl === `kd,${XK.Alt_L} ku,${XK.Alt_L} kd,${XK.Control_L} kd,99`, asCtrl);
+      asCtrl === `kd,${XK.Alt_L} kd,${XK.Control_L} ku,${XK.Alt_L} kd,99`, asCtrl);
+// The Alt_L a lone Command holds has to be let go under the Control it turns
+// into: an Alt press and release with nothing between them is an Alt tap, which
+// opens the remote menu bar and takes the C as its mnemonic.
+const copyStroke = wire('blink-mac', [['down', 'MetaLeft'], ['down', 'KeyC', 'c'],
+                                      ['up', 'KeyC', 'c'], ['up', 'MetaLeft']]);
+const strokeEvents = copyStroke.split(' ');
+const altTapped = strokeEvents.some((e, i) =>
+    e === `kd,${XK.Alt_L}` && strokeEvents[i + 1] === `ku,${XK.Alt_L}`);
+check('a full Cmd+C stroke sends Ctrl+C with no lone Alt tap',
+      !altTapped && copyStroke === `kd,${XK.Alt_L} kd,${XK.Control_L} ku,${XK.Alt_L} `
+                                  + `kd,99 ku,99 ku,${XK.Control_L}`, copyStroke);
 Input.macCmdAsCtrl = false;
 try {
     const asSuper = wire('blink-mac', cmdChord);
