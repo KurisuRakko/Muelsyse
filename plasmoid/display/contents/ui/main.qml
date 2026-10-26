@@ -30,7 +30,19 @@ PlasmoidItem {
     readonly property string tool: "\"${MUELSYSE_DISPLAY_CLI:-$HOME/.local/bin/muelsyse-display}\""
     readonly property string statusCmd: tool + " status --json"
 
-    readonly property var presets: [[3840, 2160], [2560, 1440], [2560, 1600], [1920, 1080], [1920, 1200]]
+    // [w, h, 名字]；MacBook 那两项是全屏时避开刘海后的可用区域。和 scripts/muelsyse-display-menu 保持一致。
+    readonly property var presets: [
+        [3840, 2160, "4K"],
+        [3456, 2160, "3.5K 16:10 · MacBook 16 寸全屏"],
+        [3456, 1944, "3.5K 16:9"],
+        [3200, 1800, "3K 16:9"],
+        [3024, 1890, "3K · MacBook 14 寸全屏"],
+        [2880, 1800, "3K 16:10"],
+        [2560, 1600, "2.5K"],
+        [2560, 1440, "2K"],
+        [1920, 1200, "1080P 16:10"],
+        [1920, 1080, "1080P"]
+    ]
     readonly property int customIndex: presets.length
     readonly property var scales: [1.0, 1.25, 1.5, 1.75, 2.0]
     readonly property var scaleArgs: ["1.0", "1.25", "1.5", "1.75", "2.0"]
@@ -503,7 +515,7 @@ PlasmoidItem {
                 PlasmaComponents3.ComboBox {
                     id: resCombo
                     Layout.fillWidth: true
-                    model: root.presets.map(p => p[0] + "×" + p[1]).concat(["自定义"])
+                    model: root.presets.map(p => p[2] + "（" + p[0] + "×" + p[1] + "）").concat(["自定义"])
                     currentIndex: root.customMode ? root.customIndex : root.presetIdx
                     onActivated: index => {
                         root.userEdited = true

@@ -7,7 +7,9 @@ set -u
 CLI=${MUELSYSE_DISPLAY_CLI:-$HOME/.local/bin/muelsyse-display}
 TITLE="显示器设置（Muelsyse）"
 
-PRESETS=(3840x2160 2560x1440 2560x1600 1920x1080 1920x1200)
+# 和托盘小部件（plasmoid/display）的预设保持一致；MacBook 那两项是全屏时避开刘海后的可用区域。
+PRESETS=(3840x2160 3456x2160 3456x1944 3200x1800 3024x1890 2880x1800 2560x1600 2560x1440 1920x1200 1920x1080)
+PRESET_NAMES=("4K" "3.5K 16:10 · MacBook 16 寸全屏" "3.5K 16:9" "3K 16:9" "3K · MacBook 14 寸全屏" "3K 16:10" "2.5K" "2K" "1080P 16:10" "1080P")
 SCALES=(1.0 1.25 1.5 1.75 2.0)
 SCALE_LABELS=(100% 125% 150% 175% 200%)
 
@@ -79,9 +81,10 @@ if [ "${#leases[@]}" -gt 0 ]; then
 fi
 
 items=()
-for p in "${PRESETS[@]}"; do
-	label=$p
-	[ "$p" = "${cur_w}x${cur_h}" ] && label="$p（当前）"
+for i in "${!PRESETS[@]}"; do
+	p=${PRESETS[$i]}
+	label="${PRESET_NAMES[$i]}（$p）"
+	[ "$p" = "${cur_w}x${cur_h}" ] && label+="（当前）"
 	items+=("res:$p" "$label")
 done
 items+=(custom "自定义分辨率…" scale "缩放…")
