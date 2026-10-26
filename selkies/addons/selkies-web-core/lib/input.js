@@ -38,19 +38,16 @@
  * once nothing composes in it. Chords on non-Latin layouts resolve from the
  * physical key position, and a chord whose modifier keydown never reached the
  * server is sent self-contained, wrapped in the missing modifiers. macOS
- * Command is remapped onto Control, except over Tab, where it stays the Alt it
- * stands for alone so Cmd+Tab switches remote windows; Windows defers a
- * ControlLeft keydown briefly to tell AltGr apart.
+ * Command is remapped onto Control, and Windows defers a ControlLeft keydown
+ * briefly to tell AltGr apart.
  *
  * Pointer: absolute positions map through the presenting sink (the canvas or
  * `<video>` box) where the stream has a fixed size, and through the element's
  * window math otherwise; motion is coalesced to one send per animation frame.
  * Under pointer lock the payload is a relative delta, scaled to server pixels
  * and quantized with a carried remainder. Any stream fullscreen locks
- * Escape, Meta and Tab, and on macOS W and Q only while Command is held (a
- * letter locked for good skips the macOS input method and the Cmd
- * shortcuts); gaming mode adds Alt and the context-menu key, and pointer
- * lock. Touch is direct (tap, drag, long-press right
+ * Escape (no wider: a locked key skips the macOS input method and Cmd
+ * shortcuts); gaming mode adds Alt/Tab/Meta and pointer lock. Touch is direct (tap, drag, long-press right
  * click, two-finger scroll) or a trackpad emulation. Wheel events are
  * classified as discrete wheel or trackpad and accumulated in fractional
  * notches so no distance is lost. The server-drawn cursor is painted on a
@@ -1140,18 +1137,6 @@ const browser = {
  *  move those around: macOS Command is sent as Alt_L. */
 const SHORTCUT_MODIFIER_CODES = ['ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight'];
 
-/** Keys plain stream fullscreen locks: Escape so a short press reaches the
- *  session, and Command and Tab so Cmd+Tab switches remote windows rather
- *  than the local application. No letter: see `requestKeyboardLock`. */
-const FULLSCREEN_LOCK_KEYS = ['Escape', 'MetaLeft', 'MetaRight', 'Tab'];
-
-/** Keys gaming mode locks instead, the system keys a game wants for itself. */
-const GAMING_LOCK_KEYS = ['AltLeft', 'AltRight', 'Tab', 'Escape', 'MetaLeft', 'MetaRight', 'ContextMenu'];
-
-/** Keys macOS also locks while Command is held, so Cmd+W and Cmd+Q reach the
- *  session instead of closing the tab or quitting the browser. */
-const MAC_CMD_LOCK_KEYS = ['KeyW', 'KeyQ'];
-
 /**
  * Whether a keysym is a chord modifier: one that turns the key sent under it
  * into a shortcut rather than a character.
@@ -1558,10 +1543,6 @@ export class Input {
         this._altGrTimeout = null;
         this._altGrCtrlTime = 0;
         this._macCmdSwapped = false;
-        /** Keysym each Command code held before the Cmd-to-Ctrl swap released it, for Cmd+Tab to press again. */
-        this._macCmdSwappedMeta = {};
-        /** Whether the keyboard lock holds `MAC_CMD_LOCK_KEYS` for a held Command. */
-        this._macCmdLockWidened = false;
 
         this._isSynth = false;
         /**
@@ -2020,9 +2001,7 @@ export class Input {
     /**
      * Releases every held key and stops the heartbeat. The armed Windows AltGr
      * timer is cancelled so it cannot synthesize a Control keydown after the
-     * reset, while the page is hidden or detached. A lock widened for a held
-     * Command narrows back too: blur, hiding the page or Cmd+Tab leaving it
-     * can each eat the Command keyup that would have narrowed it.
+     * reset, while the page is hidden or detached.
      */
     resetKeyboard() {
         this._stopKeyHeartbeat();
@@ -2032,9 +2011,7 @@ export class Input {
             this._sendKeyEvent(this._keyDownList[code], code, false);
         }
         this._keyDownList = {};
-        this._macCmdSwappedMeta = {};
         this._altKeysymByCode.clear();
-        this._narrowMacCmdLock();
     }
 
     /** Releases held keys when the page is hidden: throttled heartbeats in a background tab can exceed the server's stale-key window. */
@@ -2116,7 +2093,6 @@ export class Input {
         if (!this._guac_markEvent(event)) return;
         this._chordKeySent = false;
         this._releaseDesyncedModifiers(event);
-        this._followMacCmdLock(event);
         const keycode = KeyboardUtil.getKeyCode(event);
         if (keycode === 'CapsLock' && KeyboardUtil.getKey(event) === 'CapsLock') {
             _stopEvent(event);
@@ -2188,40 +2164,15 @@ export class Input {
             return;
         }
 
-        // Cmd+Tab (and Cmd+Shift+Tab) keeps the left Command as the Alt_L it
-        // went down as, so holding Command and tapping Tab cycles the remote
-        // window switcher and releasing Command picks the window. A chord that
-        // already swapped Command for Control (Cmd+W, then Tab with Command
-        // still held) is swapped back first: Cmd+Tab means Alt+Tab whatever
-        // came before it. The right Command is Super_L, not Alt, so it keeps
-        // the Control swap below.
-        let macCmdTab = false;
-        if (browser.isMac() && Input.macCmdAsCtrl && _isPhysicalKey(event) && code === "Tab" &&
-            event.metaKey && !event.ctrlKey && !event.altKey) {
-            if (this._macCmdSwapped && this._macCmdSwappedMeta["MetaLeft"] === KeyTable.XK_Alt_L) {
-                console.log("macOS: Cmd+Tab after a Cmd chord. Restoring Cmd as Alt.");
-                if ('ControlLeft' in this._keyDownList) {
-                    this._sendKeyEvent(this._keyDownList['ControlLeft'], 'ControlLeft', false);
-                }
-                this._macCmdSwapped = false;
-                for (const metaCode in this._macCmdSwappedMeta) {
-                    this._sendKeyEvent(this._macCmdSwappedMeta[metaCode], metaCode, true);
-                }
-                this._macCmdSwappedMeta = {};
-            }
-            macCmdTab = this._keyDownList["MetaLeft"] === KeyTable.XK_Alt_L;
-        }
-
         if (browser.isMac() && Input.macCmdAsCtrl && _isPhysicalKey(event) && code !== "MetaLeft" &&
-            code !== "MetaRight" && !macCmdTab && event.metaKey && !event.ctrlKey && !event.altKey) {
+            code !== "MetaRight" && event.metaKey && !event.ctrlKey && !event.altKey) {
             if (this._keyDownList["MetaLeft"] || this._keyDownList["MetaRight"]) {
                 console.log(`macOS: Cmd+key detected for code '${code}'. Remapping Cmd to Ctrl.`);
-                this._macCmdSwappedMeta = {};
-                for (const metaCode of ["MetaLeft", "MetaRight"]) {
-                    if (this._keyDownList[metaCode]) {
-                        this._macCmdSwappedMeta[metaCode] = this._keyDownList[metaCode];
-                        this._sendKeyEvent(this._keyDownList[metaCode], metaCode, false);
-                    }
+                if (this._keyDownList["MetaLeft"]) {
+                    this._sendKeyEvent(this._keyDownList["MetaLeft"], "MetaLeft", false);
+                }
+                if (this._keyDownList["MetaRight"]) {
+                    this._sendKeyEvent(this._keyDownList["MetaRight"], "MetaRight", false);
                 }
                 this._sendKeyEvent(KeyTable.XK_Control_L, "ControlLeft", true);
                 this._macCmdSwapped = true;
@@ -2283,15 +2234,14 @@ export class Input {
             }, 100);
             return;
         }
-        // Meta is exempt while the macOS Cmd-to-Ctrl swap carries the chord,
-        // and over Cmd+Tab, where the Command held as Alt_L carries it.
+        // Meta is exempt while the macOS Cmd-to-Ctrl swap carries the chord.
         if (keysym !== null && !MODIFIER_STATE_BY_CODE[code] &&
             (event.ctrlKey || event.altKey || event.metaKey) &&
             !this._composesText(event)) {
             const missingMods = this._missingChordModifiers({
                 ctrl: event.ctrlKey,
-                alt: event.altKey || macCmdTab,
-                meta: event.metaKey && !this._macCmdSwapped && !macCmdTab,
+                alt: event.altKey,
+                meta: event.metaKey && !this._macCmdSwapped,
                 shift: event.shiftKey,
             });
             if (missingMods.length > 0) {
@@ -2364,9 +2314,6 @@ export class Input {
                 }
                 this._macCmdSwapped = false;
             }
-            this._macCmdSwappedMeta = {};
-            // event.metaKey still reports the other Command when one of two is released.
-            if (!event.metaKey) this._narrowMacCmdLock();
         }
 
         // Abort the armed AltGr sequence: this key-up is not AltRight.
@@ -3847,7 +3794,6 @@ export class Input {
             }
             this._macCmdSwapped = false;
         }
-        this._macCmdSwappedMeta = {};
     }
 
     /**
@@ -5131,7 +5077,7 @@ export class Input {
     }
 
     /**
-     * Fullscreen change: locks the keyboard (the plain or the gaming key set) for
+     * Fullscreen change: locks the keyboard (Escape, or the gaming key set) for
      * any stream fullscreen with an input context, and the pointer too in gaming mode; on exit it hands the
      * keyboard back, ends gaming mode, and releases every key on both sides
      * since a transition can eat keyups (Escape on exit, the Ctrl+Shift+F
@@ -5374,8 +5320,8 @@ export class Input {
     }
 
     /**
-     * Fullscreen that leaves the pointer to the browser and locks only Escape,
-     * Command and Tab once the transition lands (see `_onFullscreenChange`): the dashboard
+     * Fullscreen that leaves the pointer to the browser and locks only Escape
+     * once the transition lands (see `_onFullscreenChange`): the dashboard
      * button and the Ctrl+Shift+F chord land here. The
      * whole document goes fullscreen, not the stream container: the dashboard
      * overlay is a body-level sibling, which container fullscreen would hide.
@@ -5408,7 +5354,7 @@ export class Input {
     /**
      * Enters gaming mode: fullscreen that also holds the pointer, so a game
      * sees raw motion instead of the browser. The keyboard lock widens from
-     * the plain fullscreen keys to the gaming key set: a short Escape reaches the session, so
+     * Escape to the gaming key set: a short Escape reaches the session, so
      * holding it is what leaves this mode.
      *
      * A lock requested before the transition would be cancelled by it, so the
@@ -5451,54 +5397,23 @@ export class Input {
      * exists. With Escape locked the browser hands a short press to the page
      * and leaves fullscreen only on a held one.
      *
-     * Plain fullscreen locks Escape, Command and Tab (`FULLSCREEN_LOCK_KEYS`),
-     * so Cmd+Tab reaches the session as Alt+Tab instead of leaving the
-     * browser. It locks no letter for good: a locked key goes straight to the
-     * page, past the macOS input method and the Cmd shortcuts, so a locked
-     * letter would skip pinyin composition and every letter locked breaks
-     * Cmd+C/Cmd+V paste. Whether the browser treats Cmd+W or Cmd+Q as its own
-     * shortcut depends on the letter's code, not Command's, so macOS adds W
-     * and Q only while Command is held (`_followMacCmdLock`); a Command
-     * pressed mid-composition widens it too, until Command is released. Gaming mode takes `GAMING_LOCK_KEYS` instead,
-     * Alt and the context-menu key too, which a game wants and which would
-     * otherwise switch windows or open menus. Calling lock() again replaces
-     * the held set, so a mode change or a Command press re-locks.
+     * Plain fullscreen locks Escape alone: a locked key goes straight to the
+     * page, past the macOS input method and the Cmd shortcuts, so locking
+     * every key there breaks IME composition and Cmd+C/Cmd+V paste. Gaming
+     * mode also takes Alt, Tab, Meta and the context-menu key, which a game
+     * wants and which would otherwise switch windows or open menus. Calling
+     * lock() again replaces the held set, so a mode change re-locks.
      */
     requestKeyboardLock() {
         if (!this.inputAttached || !this._isStreamFullscreen()) return;
         if (navigator.keyboard && 'lock' in navigator.keyboard) {
-            const keys = this.gamingMode ? GAMING_LOCK_KEYS : FULLSCREEN_LOCK_KEYS;
-            navigator.keyboard.lock(this._macCmdLockWidened ? [...keys, ...MAC_CMD_LOCK_KEYS] : keys)
-                .catch(() => {});
+            const keys = this.gamingMode
+                ? ["AltLeft", "AltRight", "Tab", "Escape", "MetaLeft", "MetaRight", "ContextMenu"]
+                : ["Escape"];
+            navigator.keyboard.lock(keys).catch(() => {});
             return;
         }
         this._noticeKeyboardLockUnavailable();
-    }
-
-    /**
-     * Widens the keyboard lock by `MAC_CMD_LOCK_KEYS` when a Command key goes
-     * down on macOS under a held lock, and narrows it on a keydown that
-     * reports Command up, in case the keyup was lost. The flag keeps an
-     * auto-repeating or second Command from locking again.
-     * @param {KeyboardEvent} event
-     */
-    _followMacCmdLock(event) {
-        if (!browser.isMacDesktop()) return;
-        if (event.code !== 'MetaLeft' && event.code !== 'MetaRight') {
-            if (!event.metaKey) this._narrowMacCmdLock();
-            return;
-        }
-        if (this._macCmdLockWidened || !this.inputAttached || !this._isStreamFullscreen() ||
-            !(navigator.keyboard && 'lock' in navigator.keyboard)) return;
-        this._macCmdLockWidened = true;
-        this.requestKeyboardLock();
-    }
-
-    /** Takes the lock back to the mode's own keys once no Command is held. */
-    _narrowMacCmdLock() {
-        if (!this._macCmdLockWidened) return;
-        this._macCmdLockWidened = false;
-        this.requestKeyboardLock();
     }
 
     /**
@@ -5525,7 +5440,6 @@ export class Input {
 
     /** Hands the system keys back; a browser that never locked them ignores it. */
     releaseKeyboardLock() {
-        this._macCmdLockWidened = false;
         if (navigator.keyboard && 'unlock' in navigator.keyboard) {
             try {
                 navigator.keyboard.unlock();

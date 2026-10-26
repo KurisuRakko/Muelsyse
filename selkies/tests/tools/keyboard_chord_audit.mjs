@@ -161,7 +161,7 @@ function wire(engineName, steps, opts = {}) {
 
 const XK = { Alt_L: 65513, Mode_switch: 65406, ISO_Level3_Shift: 65027, Control_L: 65507,
              Control_R: 65508, Super_L: 65515, Meta_L: 65511, Omega: 0x7d9, lstroke: 435,
-             Tab: 65289, Left: 65361, Shift_L: 65505 };
+             Tab: 65289, Left: 65361 };
 
 /**
  * One physical action, the engines that can perform it, and the wire it means.
@@ -208,42 +208,6 @@ const ACTIONS = [
       engines: ['blink-mac', 'gecko-mac'],
       steps: [['down', 'MetaLeft'], ['down', 'KeyC', 'c']],
       wire: `kd,${XK.Alt_L} ku,${XK.Alt_L} kd,${XK.Control_L} kd,99` },
-    { name: 'Cmd+C released leaves nothing held',
-      engines: ['blink-mac', 'gecko-mac'],
-      steps: [['down', 'MetaLeft'], ['down', 'KeyC', 'c'], ['up', 'KeyC', 'c'], ['up', 'MetaLeft']],
-      wire: `kd,${XK.Alt_L} ku,${XK.Alt_L} kd,${XK.Control_L} kd,99 ku,99 ku,${XK.Control_L}` },
-    // -- macOS: Cmd+Tab keeps Command as the Alt it stands for alone, so held
-    // -- Command with Tab tapped cycles the remote switcher and releasing
-    // -- Command picks the window.
-    { name: 'Cmd+Tab tapped twice is Alt held over two Tabs',
-      engines: ['blink-mac', 'gecko-mac'],
-      steps: [['down', 'MetaLeft'], ['down', 'Tab'], ['up', 'Tab'], ['down', 'Tab'], ['up', 'Tab'],
-              ['up', 'MetaLeft']],
-      wire: `kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Tab} kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Alt_L}` },
-    // Shift under Command already swaps it for Control, as for any Cmd+Shift
-    // chord; Tab then swaps it back, so Tab lands under Alt+Shift.
-    { name: 'Cmd+Shift+Tab is Alt+Shift+Tab',
-      engines: ['blink-mac', 'gecko-mac'],
-      steps: [['down', 'MetaLeft'], ['down', 'ShiftLeft'], ['down', 'Tab'], ['up', 'Tab'],
-              ['up', 'ShiftLeft'], ['up', 'MetaLeft']],
-      wire: `kd,${XK.Alt_L} ku,${XK.Alt_L} kd,${XK.Control_L} kd,${XK.Shift_L} ku,${XK.Control_L} `
-          + `kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Shift_L} ku,${XK.Alt_L}` },
-    { name: 'Cmd+W then Tab under the same Command swaps Control back to Alt',
-      engines: ['blink-mac', 'gecko-mac'],
-      steps: [['down', 'MetaLeft'], ['down', 'KeyW', 'w'], ['up', 'KeyW', 'w'], ['down', 'Tab'],
-              ['up', 'Tab'], ['up', 'MetaLeft']],
-      wire: `kd,${XK.Alt_L} ku,${XK.Alt_L} kd,${XK.Control_L} kd,119 ku,119 ku,${XK.Control_L} `
-          + `kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Alt_L}` },
-    { name: 'Cmd+Tab then C under the same Command is still Ctrl+C',
-      engines: ['blink-mac', 'gecko-mac'],
-      steps: [['down', 'MetaLeft'], ['down', 'Tab'], ['up', 'Tab'], ['down', 'KeyC', 'c'],
-              ['up', 'KeyC', 'c'], ['up', 'MetaLeft']],
-      wire: `kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Alt_L} kd,${XK.Control_L} kd,99 ku,99 `
-          + `ku,${XK.Control_L}` },
-    { name: 'a Tab held when Command goes up is released with the Alt',
-      engines: ['blink-mac', 'gecko-mac'],
-      steps: [['down', 'MetaLeft'], ['down', 'Tab'], ['up', 'MetaLeft'], ['up', 'Tab']],
-      wire: `kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Alt_L}` },
     // -- PC: AltGr is the level-3 shift and Alt is the action modifier, whether
     // -- or not the engine has an AltGraph flag to say so.
     { name: 'AltGr+L types the Polish l-stroke',
@@ -380,9 +344,6 @@ try {
     const cmdReturn = wire('blink-mac', [['down', 'MetaLeft'], ['down', 'Enter']]);
     check('Cmd+Return keeps Super too, which is what a Super-modifier session binds',
           cmdReturn === `kd,${XK.Super_L} kd,65293`, cmdReturn);
-    const cmdTab = wire('blink-mac', [['down', 'MetaLeft'], ['down', 'Tab'], ['up', 'Tab'], ['up', 'MetaLeft']]);
-    check('Cmd+Tab stays Super+Tab with the setting off',
-          cmdTab === `kd,${XK.Super_L} kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Super_L}`, cmdTab);
 } finally {
     Input.macCmdAsCtrl = true;
 }
