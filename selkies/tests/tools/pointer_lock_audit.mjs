@@ -440,12 +440,14 @@ function stage(ids, locked = null) {
 }
 
 // --- the two fullscreen modes ---------------------------------------------
+const GAMING_KEYS = 'AltLeft+AltRight+Tab+Escape+MetaLeft+MetaRight+ContextMenu';
 {
     const element = makeElement('ok');
     reset(element);
     const events = [];
-    // A key list would leave the rest (Ctrl+W, Ctrl+T, ...) to the browser.
-    const keyboard = { calls: [], lock: (keys) => { keyboard.calls.push(keys === undefined ? 'lock' : 'lock-some');
+    // Plain fullscreen locks Escape alone, so the macOS input method and Cmd
+    // shortcuts still see every other key; gaming mode widens the set.
+    const keyboard = { calls: [], lock: (keys) => { keyboard.calls.push(keys === undefined ? 'lock-all' : keys.join('+'));
                                                     return Promise.resolve(); },
                        unlock: () => keyboard.calls.push('unlock') };
     Object.defineProperty(globalThis, 'navigator', { value: { keyboard }, configurable: true });
@@ -468,14 +470,14 @@ function stage(ids, locked = null) {
     document.fullscreenElement = element;
     input._onFullscreenChange();
     await sleep(10);
-    check('plain fullscreen locks every key but not the pointer',
-          element.calls.length === 0 && keyboard.calls.join(',') === 'lock',
+    check('plain fullscreen locks Escape alone and not the pointer',
+          element.calls.length === 0 && keyboard.calls.join(',') === 'Escape',
           `${element.calls.join(',')} / ${keyboard.calls.join(',')}`);
 
     document.fullscreenElement = null;
     input._onFullscreenChange();
     check('leaving plain fullscreen hands the keyboard back',
-          keyboard.calls.join(',') === 'lock,unlock' && input.gamingMode === false && events.length === 0,
+          keyboard.calls.join(',') === 'Escape,unlock' && input.gamingMode === false && events.length === 0,
           `kb=${keyboard.calls.join(',')} gaming=${input.gamingMode} events=${events.join(',')}`);
     keyboard.calls.length = 0;
 
@@ -489,7 +491,7 @@ function stage(ids, locked = null) {
     input._onFullscreenChange();
     await sleep(10);
     check('gaming mode takes the pointer and the keyboard',
-          element.calls.length > 0 && keyboard.calls.join(',') === 'lock',
+          element.calls.length > 0 && keyboard.calls.join(',') === GAMING_KEYS,
           `${element.calls.join(',')} / ${keyboard.calls.join(',')}`);
 
     document.fullscreenElement = null;
@@ -497,8 +499,18 @@ function stage(ids, locked = null) {
     await sleep(10);
     check('leaving fullscreen leaves gaming mode',
           input.gamingMode === false && events.join(',') === 'true,false'
-          && keyboard.calls.join(',') === 'lock,unlock',
+          && keyboard.calls.join(',') === `${GAMING_KEYS},unlock`,
           `gaming=${input.gamingMode} events=${events.join(',')} kb=${keyboard.calls.join(',')}`);
+
+    // Gaming mode left while still fullscreen narrows the lock back to Escape;
+    // lock() replaces the held set, so no unlock comes between.
+    keyboard.calls.length = 0;
+    document.fullscreenElement = element;
+    input._setGamingMode(true);
+    input._setGamingMode(false);
+    check('a mode change in fullscreen re-locks to that mode\'s keys',
+          keyboard.calls.join(',') === `${GAMING_KEYS},Escape`, keyboard.calls.join(','));
+    document.fullscreenElement = null;
 }
 {
     // The keyboard lock follows the input context: a page holding none has no
