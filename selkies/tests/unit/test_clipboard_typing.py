@@ -139,9 +139,13 @@ def make_handler(vk_error: bool = True, separate: bool = True,
     h.typed = []
     h.writes = []
     h.clipboard = clipboard
+    # No chord gaps, so the fixed worker settle still covers the restore.
+    h._PASTE_CHORD_GAP_S = 0
+    h.key_times = []
 
     async def send(keysym, down=True, neutralize=None):
         h.keys.append((keysym, down))
+        h.key_times.append(asyncio.get_running_loop().time())
     h.send_x11_keypress = send
 
     async def wl_type(text):
@@ -257,6 +261,14 @@ async def main() -> None:
     ok = await h._inject_text_via_clipboard("direct")
     check("non-nested topology injects and restores the same way",
           ok and [w[0] for w in h.writes] == ["direct", "before"], h.writes)
+
+    h = make_handler(clipboard=("before", "text/plain"))
+    del h._PASTE_CHORD_GAP_S
+    ok = await h._inject_text_via_clipboard("spaced")
+    gaps = [b - a for a, b in zip(h.key_times, h.key_times[1:])]
+    check("paste chord keys are spaced apart, not sent back to back",
+          ok and WebRTCInput._PASTE_CHORD_GAP_S > 0 and len(gaps) == 3
+          and min(gaps) >= WebRTCInput._PASTE_CHORD_GAP_S * 0.9, gaps)
 
     await tracked_cases()
 

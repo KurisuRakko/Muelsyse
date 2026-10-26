@@ -5209,6 +5209,10 @@ class WebRTCInput:
     #: Mime a KDE clipboard manager reads to skip recording a selection, so
     #: typed text stays out of the clipboard history and its read is not
     #: mistaken for the paste.
+    #: With zero gaps between the paste chord keys, KWin-side apps never
+    #: fetch the selection; space each key event apart.
+    _PASTE_CHORD_GAP_S = 0.01
+
     _PASSWORD_HINT_MIME = "x-kde-passwordManagerHint"
 
     async def _inject_text_via_clipboard(self, text: str) -> bool:
@@ -5256,8 +5260,11 @@ class WebRTCInput:
                     else:
                         baseline = await self._settle_paste_baseline(token)
                     await self.send_x11_keypress(shift_keysym, down=True)
+                    await asyncio.sleep(self._PASTE_CHORD_GAP_S)
                     await self.send_x11_keypress(insert_keysym, down=True, neutralize=False)
+                    await asyncio.sleep(self._PASTE_CHORD_GAP_S)
                     await self.send_x11_keypress(insert_keysym, down=False)
+                    await asyncio.sleep(self._PASTE_CHORD_GAP_S)
                     await self.send_x11_keypress(shift_keysym, down=False)
                     if token is None:
                         # Untracked: a margin for the app to finish fetching.
