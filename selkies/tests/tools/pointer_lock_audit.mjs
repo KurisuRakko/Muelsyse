@@ -16,7 +16,8 @@
 // either side, through the shared settings ladder and the core's setter, which
 // switches a lock already held rather than waiting for the next one. The lock belongs to gaming mode alone -- plain fullscreen
 // leaves the pointer to the browser so the dashboard stays usable, though it
-// locks every key so a short Escape reaches the session -- and its
+// locks Escape, Command and Tab so a short Escape and Cmd+Tab reach the
+// session, and on macOS W and Q only while Command is held -- and its
 // caller guards the request (gaming mode, stream fullscreen, not already locked,
 // an input context attached); the request it re-runs after a refusal must pass those
 // guards again, since the page can leave fullscreen while the first one is still
@@ -441,12 +442,14 @@ function stage(ids, locked = null) {
 
 // --- the two fullscreen modes ---------------------------------------------
 const GAMING_KEYS = 'AltLeft+AltRight+Tab+Escape+MetaLeft+MetaRight+ContextMenu';
+const PLAIN_KEYS = 'Escape+MetaLeft+MetaRight+Tab';
 {
     const element = makeElement('ok');
     reset(element);
     const events = [];
-    // Plain fullscreen locks Escape alone, so the macOS input method and Cmd
-    // shortcuts still see every other key; gaming mode widens the set.
+    // Plain fullscreen locks Escape, Command and Tab and no letter, so the
+    // macOS input method and Cmd shortcuts still see every letter; gaming
+    // mode widens the set.
     const keyboard = { calls: [], lock: (keys) => { keyboard.calls.push(keys === undefined ? 'lock-all' : keys.join('+'));
                                                     return Promise.resolve(); },
                        unlock: () => keyboard.calls.push('unlock') };
@@ -470,14 +473,14 @@ const GAMING_KEYS = 'AltLeft+AltRight+Tab+Escape+MetaLeft+MetaRight+ContextMenu'
     document.fullscreenElement = element;
     input._onFullscreenChange();
     await sleep(10);
-    check('plain fullscreen locks Escape alone and not the pointer',
-          element.calls.length === 0 && keyboard.calls.join(',') === 'Escape',
+    check('plain fullscreen locks Escape, Command and Tab, and not the pointer',
+          element.calls.length === 0 && keyboard.calls.join(',') === PLAIN_KEYS,
           `${element.calls.join(',')} / ${keyboard.calls.join(',')}`);
 
     document.fullscreenElement = null;
     input._onFullscreenChange();
     check('leaving plain fullscreen hands the keyboard back',
-          keyboard.calls.join(',') === 'Escape,unlock' && input.gamingMode === false && events.length === 0,
+          keyboard.calls.join(',') === `${PLAIN_KEYS},unlock` && input.gamingMode === false && events.length === 0,
           `kb=${keyboard.calls.join(',')} gaming=${input.gamingMode} events=${events.join(',')}`);
     keyboard.calls.length = 0;
 
@@ -502,14 +505,14 @@ const GAMING_KEYS = 'AltLeft+AltRight+Tab+Escape+MetaLeft+MetaRight+ContextMenu'
           && keyboard.calls.join(',') === `${GAMING_KEYS},unlock`,
           `gaming=${input.gamingMode} events=${events.join(',')} kb=${keyboard.calls.join(',')}`);
 
-    // Gaming mode left while still fullscreen narrows the lock back to Escape;
+    // Gaming mode left while still fullscreen narrows the lock back to the plain keys;
     // lock() replaces the held set, so no unlock comes between.
     keyboard.calls.length = 0;
     document.fullscreenElement = element;
     input._setGamingMode(true);
     input._setGamingMode(false);
     check('a mode change in fullscreen re-locks to that mode\'s keys',
-          keyboard.calls.join(',') === `${GAMING_KEYS},Escape`, keyboard.calls.join(','));
+          keyboard.calls.join(',') === `${GAMING_KEYS},${PLAIN_KEYS}`, keyboard.calls.join(','));
     document.fullscreenElement = null;
 }
 {
@@ -547,6 +550,100 @@ const GAMING_KEYS = 'AltLeft+AltRight+Tab+Escape+MetaLeft+MetaRight+ContextMenu'
     check('a refused fullscreen rolls the mode back',
           input.gamingMode === false && events.join(',') === 'true,false',
           `gaming=${input.gamingMode} events=${events.join(',')}`);
+}
+
+// --- Command held on macOS --------------------------------------------------
+// Chrome takes Cmd+W and Cmd+Q as its own unless the letter's code is locked,
+// and a letter locked for good skips the macOS input method, so W and Q are
+// locked only while Command is held: once on its keydown (not again on its
+// auto-repeat or the other Command), and back to the mode's keys when the
+// last Command goes up or the keyboard is reset.
+{
+    const element = makeElement('ok');
+    reset(element);
+    globalThis.window = globalThis;
+    const keyboard = { calls: [], lock: (keys) => { keyboard.calls.push(keys.join('+')); return Promise.resolve(); },
+                       unlock: () => keyboard.calls.push('unlock') };
+    const setPlatform = (platform) => Object.defineProperty(globalThis, 'navigator', {
+        value: { keyboard, platform, userAgent: 'Mozilla/5.0 (Macintosh) Chrome/151',
+                 userAgentData: { brands: [{ brand: 'Google Chrome' }] } },
+        configurable: true });
+    setPlatform('MacIntel');
+    const input = makeInput(element, false);
+    input.sent = [];
+    input.send = (msg) => input.sent.push(msg);
+    input._keyDownList = {};
+    input._momentaryChordMods = new Set();
+    input._altKeysymByCode = new Map();
+    input._macCmdSwapped = false;
+    input._macCmdSwappedMeta = {};
+    input._macCmdLockWidened = false;
+    input.isComposing = false;
+    input._EVENT_MARKER = '_AUDIT_MARK';
+    input._startKeyHeartbeat = () => {};
+    input._stopKeyHeartbeat = () => {};
+    const key = (type, code, metaKey, repeat = false) => {
+        const event = {
+            key: code.startsWith('Meta') ? 'Meta' : code.startsWith('Key') ? code.slice(3).toLowerCase() : code,
+            code, location: code === 'MetaLeft' ? 1 : code === 'MetaRight' ? 2 : 0, keyCode: 0,
+            isComposing: false, timeStamp: 0, isTrusted: true, repeat,
+            altKey: false, ctrlKey: false, shiftKey: false, metaKey,
+            target: { classList: { contains: () => false }, parentElement: null },
+            getModifierState: (name) => name === 'Meta' && metaKey,
+            preventDefault() {}, stopPropagation() {},
+        };
+        if (type === 'down') input._handleKeyDown(event); else input._handleKeyUp(event);
+    };
+    const WIDE = `${PLAIN_KEYS}+KeyW+KeyQ`;
+
+    key('down', 'MetaLeft', true);
+    key('down', 'MetaLeft', true, true);
+    key('down', 'MetaRight', true);
+    check('a held Command adds W and Q to the lock, once',
+          keyboard.calls.join(',') === WIDE, keyboard.calls.join(','));
+    key('down', 'KeyW', true);
+    key('up', 'KeyW', true);
+    key('up', 'MetaRight', true);
+    check('the lock stays wide while the other Command is held',
+          keyboard.calls.join(',') === WIDE, keyboard.calls.join(','));
+    key('up', 'MetaLeft', false);
+    check('the last Command up narrows it back to the plain keys',
+          keyboard.calls.join(',') === `${WIDE},${PLAIN_KEYS}`, keyboard.calls.join(','));
+    // Both Commands down (the right one is Super_L), both swapped for Control.
+    check('Cmd+W under the lock reached the session as Ctrl+W',
+          input.sent.join(' ') === 'kd,65513 kd,65515 ku,65513 ku,65515 kd,65507 kd,119 ku,119 ku,65507',
+          input.sent.join(' '));
+
+    keyboard.calls.length = 0;
+    key('down', 'MetaLeft', true);
+    input._setGamingMode(true);
+    check('a mode change under a held Command keeps W and Q',
+          keyboard.calls.join(',') === `${WIDE},${GAMING_KEYS}+KeyW+KeyQ`, keyboard.calls.join(','));
+    input._setGamingMode(false);
+    keyboard.calls.length = 0;
+    input.resetKeyboard();
+    check('a reset (blur, hidden page) narrows the lock with the keys it releases',
+          keyboard.calls.join(',') === PLAIN_KEYS && Object.keys(input._keyDownList).length === 0,
+          keyboard.calls.join(','));
+
+    keyboard.calls.length = 0;
+    key('down', 'MetaLeft', true);
+    key('down', 'KeyA', false);
+    check('a keydown reporting Command up narrows a lock whose keyup was lost',
+          keyboard.calls.join(',') === `${WIDE},${PLAIN_KEYS}`, keyboard.calls.join(','));
+    input.resetKeyboard();
+
+    keyboard.calls.length = 0;
+    document.fullscreenElement = null;
+    key('down', 'MetaLeft', true);
+    key('up', 'MetaLeft', false);
+    check('outside fullscreen a Command locks nothing', keyboard.calls.length === 0, keyboard.calls.join(','));
+    document.fullscreenElement = element;
+
+    setPlatform('Linux x86_64');
+    key('down', 'MetaLeft', true);
+    key('up', 'MetaLeft', false);
+    check('off macOS a Command locks nothing', keyboard.calls.length === 0, keyboard.calls.join(','));
 }
 
 // --- a keyboard the engine will not lock -----------------------------------
