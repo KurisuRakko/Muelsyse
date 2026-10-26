@@ -103,7 +103,6 @@ function makeInput() {
     input._altKeysymByCode = new Map();
     input._altGrArmed = false;
     input._altGrTimeout = null;
-    input._macCmdSwapped = false;
     input.isComposing = false;
     input.gamingMode = false;
     input._isSynth = false;
@@ -122,14 +121,18 @@ function makeInput() {
  * overrides a flag, for a modifier whose own keydown never reached the page, or
  * carries `replay` for a step clipboard-sync re-dispatched and `physical` for a
  * real keypress among page-built ones. `opts.synth` raises synthetic mode, as
- * the dashboards do while a soft modifier is held.
+ * the dashboards do while a soft modifier is held; `opts.cmdAsCtrl`, when given,
+ * sets `Input.macCmdAsCtrl` for this run only.
  */
 function wire(engineName, steps, opts = {}) {
     const engine = ENGINES[engineName];
     setPlatform(engine);
     const input = makeInput();
     input._isSynth = !!opts.synth;
+    const cmdAsCtrlBefore = Input.macCmdAsCtrl;
+    if (opts.cmdAsCtrl !== undefined) Input.macCmdAsCtrl = opts.cmdAsCtrl;
     const down = new Set();
+    try {
     for (const [action, code, char, forced] of steps) {
         if (action === 'down') down.add(code); else down.delete(code);
         const { replay, physical, ...override } = forced || {};
@@ -155,59 +158,111 @@ function wire(engineName, steps, opts = {}) {
         if (action === 'down') input._handleKeyDown(event);
         else input._handleKeyUp(event);
     }
+    } finally {
+        Input.macCmdAsCtrl = cmdAsCtrlBefore;
+    }
     clearTimeout(input._momentaryChordModsTimer);
     return input.sent.join(' ');
 }
 
 const XK = { Alt_L: 65513, Mode_switch: 65406, ISO_Level3_Shift: 65027, Control_L: 65507,
              Control_R: 65508, Super_L: 65515, Meta_L: 65511, Omega: 0x7d9, lstroke: 435,
-             Tab: 65289, Left: 65361 };
+             Tab: 65289, Left: 65361, Alt_R: 65514, Shift_L: 65505 };
 
 /**
  * One physical action, the engines that can perform it, and the wire it means.
  * Every engine listed has to produce that same wire, whatever it calls Option.
+ * `cmdAsCtrl` pins `Input.macCmdAsCtrl` for the action; `aloneTap` marks the one
+ * whose lone Alt press and release is what the user did.
  */
 const ACTIONS = [
-    // -- macOS: Option is the layout's level-3 shift, and the client sends it
-    // -- as one, so a chord that produced a character carries the character.
-    { name: 'Option+Z types the omega it produced',
+    // -- macOS with Command as Control off: Option is the layout's level-3
+    // -- shift, and the client sends it as one, so a chord that produced a
+    // -- character carries the character.
+    { name: 'Option+Z types the omega it produced', cmdAsCtrl: false,
       engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
       steps: [['down', 'AltLeft'], ['down', 'KeyZ', 'Ω'], ['up', 'KeyZ', 'Ω'], ['up', 'AltLeft']],
       wire: `kd,LEVEL3 kd,${XK.Omega} ku,${XK.Omega} ku,LEVEL3` },
-    { name: 'right Option+Z types it too, past the momentary shift',
+    { name: 'right Option+Z types it too, past the momentary shift', cmdAsCtrl: false,
       engines: ['blink-mac', 'gecko-mac'],
       steps: [['down', 'AltRight'], ['down', 'KeyZ', 'Ω'], ['up', 'KeyZ', 'Ω'], ['up', 'AltRight']],
       wire: `kd,${XK.ISO_Level3_Shift} ku,${XK.ISO_Level3_Shift} kd,${XK.Omega} ku,${XK.Omega}` },
-    { name: 'Option+L types the @ a German layout puts there',
+    { name: 'Option+L types the @ a German layout puts there', cmdAsCtrl: false,
       engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
       steps: [['down', 'AltLeft'], ['down', 'KeyL', '@'], ['up', 'KeyL', '@'], ['up', 'AltLeft']],
       wire: 'kd,LEVEL3 kd,64 ku,64 ku,LEVEL3' },
-    { name: 'Shift+Option+Z types its own character, with no Shift on the wire',
+    { name: 'Shift+Option+Z types its own character, with no Shift on the wire', cmdAsCtrl: false,
       engines: ['blink-mac', 'gecko-mac'],
       steps: [['down', 'ShiftLeft'], ['down', 'AltLeft'], ['down', 'KeyZ', '¸']],
       wire: 'kd,65505 kd,LEVEL3 kd,184' },
     // -- macOS: Option over a key that produced no character is a shortcut, and
     // -- Command or Control makes one of any chord.
-    { name: 'Option+Tab stays Alt+Tab',
+    { name: 'Option+Tab stays Alt+Tab', cmdAsCtrl: false,
       engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
       steps: [['down', 'AltLeft'], ['down', 'Tab']],
       wire: `kd,LEVEL3 kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Alt_L}` },
-    { name: 'Option+ArrowLeft stays Alt+Left',
+    { name: 'Option+ArrowLeft stays Alt+Left', cmdAsCtrl: false,
       engines: ['blink-mac', 'gecko-mac'],
       steps: [['down', 'AltLeft'], ['down', 'ArrowLeft']],
       wire: `kd,LEVEL3 kd,${XK.Alt_L} kd,${XK.Left} ku,${XK.Alt_L}` },
-    { name: 'Cmd+Option+Z is a shortcut on the physical key',
+    { name: 'Cmd+Option+Z is Ctrl+Alt on the physical key',
       engines: ['blink-mac', 'gecko-mac'],
       steps: [['down', 'MetaLeft'], ['down', 'AltLeft'], ['down', 'KeyZ', 'Ω']],
-      wire: `kd,${XK.Alt_L} kd,LEVEL3 kd,${XK.Super_L} kd,122 ku,${XK.Super_L}` },
-    { name: 'Ctrl+Option+X is a shortcut on the physical key',
+      wire: `kd,${XK.Control_L} kd,${XK.Alt_L} kd,122` },
+    { name: 'Ctrl+Option+X is a shortcut on the physical key', cmdAsCtrl: false,
       engines: ['blink-mac', 'gecko-mac'],
       steps: [['down', 'ControlLeft'], ['down', 'AltLeft'], ['down', 'KeyX', '≈']],
       wire: `kd,${XK.Control_L} kd,LEVEL3 kd,${XK.Alt_L} kd,120 ku,${XK.Alt_L}` },
+    // -- macOS with Command as Control on (the default): Command is Control
+    // -- from its keydown and Option is Alt, with no Alt tap in between.
     { name: 'Cmd+C reaches the server as its Ctrl chord',
-      engines: ['blink-mac', 'gecko-mac'],
-      steps: [['down', 'MetaLeft'], ['down', 'KeyC', 'c']],
-      wire: `kd,${XK.Alt_L} kd,${XK.Control_L} ku,${XK.Alt_L} kd,99` },
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'MetaLeft'], ['down', 'KeyC', 'c'], ['up', 'KeyC', 'c'], ['up', 'MetaLeft']],
+      wire: `kd,${XK.Control_L} kd,99 ku,99 ku,${XK.Control_L}` },
+    { name: 'Cmd+V reaches the server as its Ctrl chord',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'MetaLeft'], ['down', 'KeyV', 'v'], ['up', 'KeyV', 'v'], ['up', 'MetaLeft']],
+      wire: `kd,${XK.Control_L} kd,118 ku,118 ku,${XK.Control_L}` },
+    { name: 'Cmd+A reaches the server as its Ctrl chord',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'MetaLeft'], ['down', 'KeyA', 'a'], ['up', 'KeyA', 'a'], ['up', 'MetaLeft']],
+      wire: `kd,${XK.Control_L} kd,97 ku,97 ku,${XK.Control_L}` },
+    { name: 'the right Cmd is the right Control',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'MetaRight'], ['down', 'KeyC', 'c'], ['up', 'KeyC', 'c'], ['up', 'MetaRight']],
+      wire: `kd,${XK.Control_R} kd,99 ku,99 ku,${XK.Control_R}` },
+    { name: 'Cmd alone presses and releases Control only',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'MetaLeft'], ['up', 'MetaLeft']],
+      wire: `kd,${XK.Control_L} ku,${XK.Control_L}` },
+    { name: 'Cmd+Tab+Tab walks the switcher under one Alt, with no Control left held',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'MetaLeft'], ['down', 'Tab'], ['up', 'Tab'], ['down', 'Tab'], ['up', 'Tab'],
+              ['up', 'MetaLeft']],
+      wire: `kd,${XK.Control_L} ku,${XK.Control_L} kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Tab} `
+          + `kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Alt_L}` },
+    { name: 'Cmd+Tab then Shift+Tab walks back under the same Alt',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'MetaLeft'], ['down', 'Tab'], ['up', 'Tab'], ['down', 'ShiftLeft'],
+              ['down', 'Tab'], ['up', 'Tab'], ['up', 'ShiftLeft'], ['up', 'MetaLeft']],
+      wire: `kd,${XK.Control_L} ku,${XK.Control_L} kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Tab} `
+          + `kd,${XK.Shift_L} kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Shift_L} ku,${XK.Alt_L}` },
+    { name: 'Option+F is Alt+F on the physical key, not the character macOS composed',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'AltLeft'], ['down', 'KeyF', 'ƒ'], ['up', 'KeyF', 'ƒ'], ['up', 'AltLeft']],
+      wire: `kd,${XK.Alt_L} kd,102 ku,102 ku,${XK.Alt_L}` },
+    { name: 'the right Option is the right Alt',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'AltRight'], ['down', 'KeyF', 'ƒ'], ['up', 'KeyF', 'ƒ'], ['up', 'AltRight']],
+      wire: `kd,${XK.Alt_R} kd,102 ku,102 ku,${XK.Alt_R}` },
+    { name: 'Option alone is the Alt tap the user made', aloneTap: true,
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'AltLeft'], ['up', 'AltLeft']],
+      wire: `kd,${XK.Alt_L} ku,${XK.Alt_L}` },
+    { name: 'Option+Tab is Alt+Tab',
+      engines: ['blink-mac', 'gecko-mac', 'webkit-mac'],
+      steps: [['down', 'AltLeft'], ['down', 'Tab'], ['up', 'Tab'], ['up', 'AltLeft']],
+      wire: `kd,${XK.Alt_L} kd,${XK.Tab} ku,${XK.Tab} ku,${XK.Alt_L}` },
     // -- PC: AltGr is the level-3 shift and Alt is the action modifier, whether
     // -- or not the engine has an AltGraph flag to say so.
     { name: 'AltGr+L types the Polish l-stroke',
@@ -226,7 +281,7 @@ const ACTIONS = [
       engines: ['blink-pc', 'gecko-pc', 'legacy-pc'],
       steps: [['down', 'AltLeft'], ['down', 'KeyF', 'f']],
       wire: `kd,${XK.Alt_L} kd,102` },
-    { name: 'a right Option reported as a Meta key still types its character',
+    { name: 'a right Option reported as a Meta key still types its character', cmdAsCtrl: false,
       engines: ['webkit-mac'],
       steps: [['down', 'AltRight'], ['down', 'KeyZ', 'Ω'], ['up', 'KeyZ', 'Ω'], ['up', 'AltRight']],
       wire: `kd,65512 kd,${XK.Omega} ku,${XK.Omega} ku,65512` },
@@ -263,7 +318,7 @@ const LEVEL3 = { 'blink-mac': XK.Mode_switch, 'gecko-mac': XK.Mode_switch,
 for (const action of ACTIONS) {
     const seen = new Map();
     for (const engine of action.engines) {
-        seen.set(engine, wire(engine, action.steps));
+        seen.set(engine, wire(engine, action.steps, { cmdAsCtrl: action.cmdAsCtrl }));
     }
     const want = action.engines.map((e) =>
         [e, action.wire.replaceAll('LEVEL3', String(LEVEL3[e] ?? XK.ISO_Level3_Shift))]);
@@ -279,7 +334,8 @@ for (const action of ACTIONS) {
     for (const engine of action.engines) {
         const family = engine.split('-')[1];
         if (!platforms.has(family)) platforms.set(family, []);
-        platforms.get(family).push([engine, wire(engine, action.steps)]);
+        platforms.get(family).push([engine, wire(engine, action.steps,
+                                                 { cmdAsCtrl: action.cmdAsCtrl })]);
     }
     for (const [family, runs] of platforms) {
         if (runs.length < 2) continue;
@@ -290,6 +346,22 @@ for (const action of ACTIONS) {
         check(`${family} engines agree on '${action.name}'`, agreed,
               agreed ? '' : normal.map(([e, w]) => `${e}: ${w}`).join(' | '));
     }
+}
+
+// An Alt pressed and released with nothing between is a lone tap, which opens
+// the remote menu bar and takes the next key as its mnemonic; only an Alt the
+// user tapped alone may reach the wire that way.
+const loneAltTap = (w) => {
+    const events = w.split(' ');
+    return events.some((e, i) => (e === `kd,${XK.Alt_L}` && events[i + 1] === `ku,${XK.Alt_L}`)
+        || (e === `kd,${XK.Alt_R}` && events[i + 1] === `ku,${XK.Alt_R}`));
+};
+for (const action of ACTIONS) {
+    if (action.aloneTap) continue;
+    const tapped = action.engines.map((e) =>
+        [e, wire(e, action.steps, { cmdAsCtrl: action.cmdAsCtrl })]).filter(([, w]) => loneAltTap(w));
+    check(`no lone Alt tap in '${action.name}'`, tapped.length === 0,
+          tapped.map(([e, w]) => `${e}: ${w}`).join(' | '));
 }
 
 // A modifier whose keydown never reached the page (an IME or an OS grab took
@@ -306,7 +378,7 @@ check('an Alt whose keydown was swallowed still names the shortcut',
 // A Control the page never saw go down is held by nothing, so only its flag
 // says the chord is a shortcut rather than the character Option composed.
 const swallowedCtrl = wire('blink-mac',
-    [['down', 'AltLeft'], ['down', 'KeyX', '≈', { ctrl: true }]]);
+    [['down', 'AltLeft'], ['down', 'KeyX', '≈', { ctrl: true }]], { cmdAsCtrl: false });
 check('a Control whose keydown was swallowed still names the shortcut',
       swallowedCtrl === `kd,${XK.Mode_switch} kd,${XK.Control_L} kd,${XK.Alt_L} kd,120 `
                      + `ku,${XK.Alt_L} ku,${XK.Control_L}`, swallowedCtrl);
@@ -331,22 +403,15 @@ check('a soft modifier survives a physical key pressed under it',
       softHeld === `kd,${XK.Control_L} kd,99`, softHeld);
 
 // macOS Command: remapped to Control by default, and sent as the Super it is
-// when the session's window manager wants that modifier for itself.
+// when the session's window manager wants that modifier for itself. A Command
+// whose keydown the page never saw is re-pressed as what it stands in for.
 const cmdChord = [['down', 'MetaLeft'], ['down', 'KeyC', 'c']];
 const asCtrl = wire('blink-mac', cmdChord);
 check('Cmd+C reaches the server as its Ctrl chord while the setting is on',
-      asCtrl === `kd,${XK.Alt_L} kd,${XK.Control_L} ku,${XK.Alt_L} kd,99`, asCtrl);
-// The Alt_L a lone Command holds has to be let go under the Control it turns
-// into: an Alt press and release with nothing between them is an Alt tap, which
-// opens the remote menu bar and takes the C as its mnemonic.
-const copyStroke = wire('blink-mac', [['down', 'MetaLeft'], ['down', 'KeyC', 'c'],
-                                      ['up', 'KeyC', 'c'], ['up', 'MetaLeft']]);
-const strokeEvents = copyStroke.split(' ');
-const altTapped = strokeEvents.some((e, i) =>
-    e === `kd,${XK.Alt_L}` && strokeEvents[i + 1] === `ku,${XK.Alt_L}`);
-check('a full Cmd+C stroke sends Ctrl+C with no lone Alt tap',
-      !altTapped && copyStroke === `kd,${XK.Alt_L} kd,${XK.Control_L} ku,${XK.Alt_L} `
-                                  + `kd,99 ku,99 ku,${XK.Control_L}`, copyStroke);
+      asCtrl === `kd,${XK.Control_L} kd,99`, asCtrl);
+const swallowedCmd = wire('blink-mac', [['down', 'KeyC', 'c', { meta: true }]]);
+check('a Command whose keydown was swallowed is re-pressed as Control',
+      swallowedCmd === `kd,${XK.Control_L} kd,99 ku,${XK.Control_L}`, swallowedCmd);
 Input.macCmdAsCtrl = false;
 try {
     const asSuper = wire('blink-mac', cmdChord);

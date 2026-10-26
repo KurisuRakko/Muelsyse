@@ -1134,7 +1134,7 @@ const browser = {
 
 /** Codes of the modifiers no layout picks a character with, so a chord holding
  *  one names a shortcut. Codes rather than keysyms, since the platform remaps
- *  move those around: macOS Command is sent as Alt_L. */
+ *  move those around: macOS Command is sent as Control_L or Alt_L. */
 const SHORTCUT_MODIFIER_CODES = ['ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight'];
 
 /**
@@ -1152,7 +1152,8 @@ function _isChordModifierKeysym(keysym) {
 
 /** Keysym to `getModifierState()` name, for a code whose own name is wrong: an
  *  xkb swap leaves an Alt code holding Control_L, and the macOS remaps leave a
- *  Meta code holding Alt_L and an Alt code holding Mode_switch or Meta_L. */
+ *  Meta code holding Control_L or Alt_L and an Alt code holding Mode_switch or
+ *  Meta_L. */
 const MODIFIER_STATE_BY_KEYSYM = {
     [KeyTable.XK_Shift_L]: 'Shift', [KeyTable.XK_Shift_R]: 'Shift',
     [KeyTable.XK_Control_L]: 'Control', [KeyTable.XK_Control_R]: 'Control',
@@ -1160,6 +1161,13 @@ const MODIFIER_STATE_BY_KEYSYM = {
     [KeyTable.XK_Meta_L]: 'Meta', [KeyTable.XK_Meta_R]: 'Meta',
     [KeyTable.XK_Super_L]: 'Meta', [KeyTable.XK_Super_R]: 'Meta',
     [KeyTable.XK_ISO_Level3_Shift]: 'Alt', [KeyTable.XK_Mode_switch]: 'Alt',
+};
+
+/** What each macOS modifier is sent as under `Input.macCmdAsCtrl`: Command as
+ *  the Control a PC shortcut names, Option as the Alt it sits in place of. */
+const MAC_CMD_AS_CTRL_KEYSYMS = {
+    MetaLeft: KeyTable.XK_Control_L, MetaRight: KeyTable.XK_Control_R,
+    AltLeft: KeyTable.XK_Alt_L, AltRight: KeyTable.XK_Alt_R,
 };
 
 /** Keypad keysyms sent as their main-keyboard equivalents, the NumLock-on set. */
@@ -1542,7 +1550,6 @@ export class Input {
         this._altGrArmed = false;
         this._altGrTimeout = null;
         this._altGrCtrlTime = 0;
-        this._macCmdSwapped = false;
 
         this._isSynth = false;
         /**
@@ -1668,13 +1675,20 @@ export class Input {
     static rawPointerMotion = !browser.isMacDesktop();
 
     /**
-     * Whether a macOS Command chord reaches the session as its Control chord:
-     * the `mac_cmd_as_ctrl` setting, which the core pushes through
-     * `setMacCmdAsCtrl`. On by default, so Cmd+C copies in the remote
-     * application the way it does locally. Off sends Command as the Super it
-     * physically is, which is what a session whose window manager takes Super
-     * as its own modifier needs: remapped, its Cmd+Return arrives as
-     * Ctrl+Return and its Cmd+C interrupts the foreground program.
+     * Whether the macOS modifiers reach the session as the PC modifiers they
+     * stand in for: the `mac_cmd_as_ctrl` setting, which the core pushes
+     * through `setMacCmdAsCtrl`. On by default: Command is Control from its
+     * keydown, so Cmd+C copies in the remote application the way it does
+     * locally, and Option is Alt, so Option+F opens a File menu rather than
+     * typing the character macOS composes. A Command whose keydown was never
+     * sent as anything else leaves no lone Alt tap for a menu bar to take.
+     * The one exception is Command+Tab, which becomes Alt+Tab for as long as
+     * Command stays down, so repeated Tabs keep walking the window switcher.
+     *
+     * Off sends Command as the Super it physically is and Option as the
+     * layout's level-3 shift, which is what a session whose window manager
+     * takes Super as its own modifier needs: remapped, its Cmd+Return arrives
+     * as Ctrl+Return and its Cmd+C interrupts the foreground program.
      */
     static macCmdAsCtrl = true;
 
@@ -1978,8 +1992,8 @@ export class Input {
      * A modifier is stale only when neither the key's position nor the keysym
      * it holds is reported down, because a remap can leave the two disagreeing
      * and either one still means the key is held: an xkb Ctrl/Alt swap leaves
-     * an Alt code holding Control_L, and macOS Command holds Alt_L on a Meta
-     * code. Asking only one of them releases a modifier mid-chord, which the
+     * an Alt code holding Control_L, and macOS Command holds Control_L on a
+     * Meta code. Asking only one of them releases a modifier mid-chord, which the
      * server then sees as the chord ending.
      */
     _releaseDesyncedModifiers(event) {
@@ -2164,35 +2178,20 @@ export class Input {
             return;
         }
 
-        if (browser.isMac() && Input.macCmdAsCtrl && _isPhysicalKey(event) && code !== "MetaLeft" &&
-            code !== "MetaRight" && event.metaKey && !event.ctrlKey && !event.altKey) {
-            if (this._keyDownList["MetaLeft"] || this._keyDownList["MetaRight"]) {
-                console.log(`macOS: Cmd+key detected for code '${code}'. Remapping Cmd to Ctrl.`);
-                // Control goes down before the Alt_L Command held is let go: an Alt
-                // press and release with no key between them is a lone Alt tap,
-                // which opens the menu bar and turns this key into its mnemonic.
-                this._sendKeyEvent(KeyTable.XK_Control_L, "ControlLeft", true);
-                if (this._keyDownList["MetaLeft"]) {
-                    this._sendKeyEvent(this._keyDownList["MetaLeft"], "MetaLeft", false);
-                }
-                if (this._keyDownList["MetaRight"]) {
-                    this._sendKeyEvent(this._keyDownList["MetaRight"], "MetaRight", false);
-                }
-                this._macCmdSwapped = true;
-            }
+        if (code === 'Tab' && event.metaKey && this._macCmdIsCtrl(event)) {
+            this._macCmdToAlt();
         }
 
         if ((browser.isMac() || browser.isIOS()) && _isPhysicalKey(event)) {
-            switch (keysym) {
-                // Command stands in for Alt only while it stands in for Control:
-                // sent as itself, it has to arrive as the Super it is.
-                case KeyTable.XK_Super_L:
-                    if (Input.macCmdAsCtrl) keysym = KeyTable.XK_Alt_L;
-                    break;
-                // X11 convention maps the right Command key onto Super_L.
-                case KeyTable.XK_Super_R: keysym = KeyTable.XK_Super_L; break;
-                case KeyTable.XK_Alt_L: keysym = KeyTable.XK_Mode_switch; break;
-                case KeyTable.XK_Alt_R: keysym = KeyTable.XK_ISO_Level3_Shift; break;
+            if (Input.macCmdAsCtrl && keysym !== null && code in MAC_CMD_AS_CTRL_KEYSYMS) {
+                keysym = MAC_CMD_AS_CTRL_KEYSYMS[code];
+            } else {
+                switch (keysym) {
+                    // X11 convention maps the right Command key onto Super_L.
+                    case KeyTable.XK_Super_R: keysym = KeyTable.XK_Super_L; break;
+                    case KeyTable.XK_Alt_L: keysym = KeyTable.XK_Mode_switch; break;
+                    case KeyTable.XK_Alt_R: keysym = KeyTable.XK_ISO_Level3_Shift; break;
+                }
             }
         }
 
@@ -2237,14 +2236,17 @@ export class Input {
             }, 100);
             return;
         }
-        // Meta is exempt while the macOS Cmd-to-Ctrl swap carries the chord.
         if (keysym !== null && !MODIFIER_STATE_BY_CODE[code] &&
             (event.ctrlKey || event.altKey || event.metaKey) &&
             !this._composesText(event)) {
+            // A held Command carries the chord whatever it stands in for, Control
+            // or the Alt of a Command+Tab; only a swallowed one is re-pressed.
+            const cmdIsCtrl = this._macCmdIsCtrl(event);
+            const cmdHeld = 'MetaLeft' in this._keyDownList || 'MetaRight' in this._keyDownList;
             const missingMods = this._missingChordModifiers({
-                ctrl: event.ctrlKey,
+                ctrl: event.ctrlKey || (cmdIsCtrl && event.metaKey && !cmdHeld),
                 alt: event.altKey,
-                meta: event.metaKey && !this._macCmdSwapped,
+                meta: event.metaKey && !cmdIsCtrl,
                 shift: event.shiftKey,
             });
             if (missingMods.length > 0) {
@@ -2308,14 +2310,6 @@ export class Input {
 
                 console.log(`macOS: Force-releasing stuck key: ${pressedCode}`);
                 this._sendKeyEvent(this._keyDownList[pressedCode], pressedCode, false);
-            }
-            
-            if (this._macCmdSwapped) {
-                console.log("macOS: Releasing the swapped virtual Ctrl key.");
-                if ('ControlLeft' in this._keyDownList) {
-                    this._sendKeyEvent(this._keyDownList['ControlLeft'], 'ControlLeft', false);
-                }
-                this._macCmdSwapped = false;
             }
         }
 
@@ -2649,6 +2643,33 @@ export class Input {
     }
 
     /**
+     * Whether this event's Command stands in for Control: a physical key on a
+     * macOS client with `Input.macCmdAsCtrl` on.
+     * @param {KeyboardEvent} event
+     * @returns {boolean}
+     */
+    _macCmdIsCtrl(event) {
+        return (browser.isMac() || browser.isIOS()) && Input.macCmdAsCtrl &&
+            _isPhysicalKey(event);
+    }
+
+    /**
+     * Turns a held Command from Control into Alt_L for Command+Tab. Control is
+     * released before Alt goes down, and Alt then stays held on the Command's
+     * code until its keyup, so every further Tab -- Shift+Tab included --
+     * walks the switcher under the same Alt. Alt is never released with no
+     * key between, so a menu bar never sees it as a lone tap.
+     */
+    _macCmdToAlt() {
+        const held = ['MetaLeft', 'MetaRight'].filter((c) =>
+            this._keyDownList[c] === KeyTable.XK_Control_L ||
+            this._keyDownList[c] === KeyTable.XK_Control_R);
+        if (held.length === 0) return;
+        for (const c of held) this._sendKeyEvent(this._keyDownList[c], c, false);
+        this._sendKeyEvent(KeyTable.XK_Alt_L, held[0], true);
+    }
+
+    /**
      * Chord modifiers the event reports held but which are absent from
      * `_keyDownList` (their keydowns were swallowed by an IME or OS grab, or an
      * earlier heal released them); these must be re-pressed around the chord
@@ -2719,7 +2740,8 @@ export class Input {
      * This client wraps Alt_L around a chord because it read the Alt-position
      * key as Alt, so a key it read as anything else must not be wrapped: the
      * `getKeysym` remaps put macOS Option on Mode_switch, ISO_Level3_Shift or
-     * Meta_L there, and only Alt_L/Alt_R name the action modifier. With
+     * Meta_L there (on Alt_L/Alt_R under `Input.macCmdAsCtrl`), and only
+     * Alt_L/Alt_R name the action modifier. With
      * nothing resolved for it -- a keydown an IME or an OS grab swallowed --
      * only an engine's own `AltGraph` says it shifted a level.
      * @param {KeyboardEvent} event
@@ -3782,8 +3804,8 @@ export class Input {
     }
 
     /**
-     * Applies the Command-as-Control setting. Any Control this swapped in is
-     * released first, so the change cannot leave one held.
+     * Applies the Command-as-Control setting. A modifier already down keeps
+     * the keysym it went down with until its keyup releases it.
      * @param {boolean} enabled
      */
     setMacCmdAsCtrl(enabled) {
@@ -3791,12 +3813,6 @@ export class Input {
         if (Input.macCmdAsCtrl === want) return;
         Input.macCmdAsCtrl = want;
         console.log(`Input: macOS Command sent as ${want ? 'Control' : 'Super'}.`);
-        if (this._macCmdSwapped) {
-            if ('ControlLeft' in this._keyDownList) {
-                this._sendKeyEvent(this._keyDownList['ControlLeft'], 'ControlLeft', false);
-            }
-            this._macCmdSwapped = false;
-        }
     }
 
     /**
