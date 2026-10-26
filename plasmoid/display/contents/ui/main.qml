@@ -246,6 +246,7 @@ PlasmoidItem {
 
     // ---- actions -------------------------------------------------------
 
+    // QML 方法调用必须把参数给全，少传会报 Insufficient arguments 并且什么都不做。
     function run(kind, args, arg) {
         if (busy || !statusKnown || daemonDown) {
             return
@@ -264,14 +265,14 @@ PlasmoidItem {
             return
         }
         run("set", "set " + selW + "x" + selH + " --scale " + scaleArgs[selScaleIdx]
-            + (forceMode ? " --force" : ""))
+            + (forceMode ? " --force" : ""), "")
     }
 
     function setPinned(on) {
         if (on) {
-            run("pin", "pin")
+            run("pin", "pin", "")
         } else {
-            run("follow", "follow")
+            run("follow", "follow", "")
         }
     }
 
