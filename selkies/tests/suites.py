@@ -41,6 +41,7 @@ SUITES: list = [
     {"path": "unit/test_webrtc_topology_settings.py", "tier": "unit", "timeout": 180},
     {"path": "unit/test_encode_pace.py", "tier": "unit", "timeout": 120},
     {"path": "unit/test_clipboard_typing.py", "tier": "unit", "timeout": 120},
+    {"path": "unit/test_pointer_pacer.py", "tier": "unit", "timeout": 120},
     {"path": "unit/test_clipboard_ladder.py", "tier": "unit", "timeout": 120},
     {"path": "unit/test_clipboard_precedence.py", "tier": "unit", "timeout": 120},
     {"path": "unit/test_clipboard_stream.py", "tier": "unit", "timeout": 120},

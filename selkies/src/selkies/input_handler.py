@@ -223,6 +223,134 @@ class PerfInputWindow:
 
 PERF_INPUT = PerfInputWindow()
 
+# Default beat of the KWin host pointer pacer: one display refresh at 60 Hz.
+POINTER_PACE_DEFAULT_MS = 1000.0 / 60.0
+# A queued move is injected within this many beats of its arrival.
+POINTER_PACE_DRAIN_BEATS = 3
+# A move this fraction of a beat after the last injection still goes straight
+# through: a 60 Hz client's jitter must not cost it a beat; only clumps queue.
+POINTER_PACE_IMMEDIATE_FRACTION = 0.5
+
+
+def pointer_pace_interval_s() -> float:
+    """Pacer beat from `MUELSYSE_POINTER_PACE_MS`, in seconds; 0 disables it.
+
+    Unset or unparsable falls back to the 60 Hz default; a negative value
+    disables like 0.
+    """
+    raw = os.environ.get("MUELSYSE_POINTER_PACE_MS", "").strip()
+    if not raw:
+        return POINTER_PACE_DEFAULT_MS / 1000.0
+    try:
+        ms = float(raw)
+    except ValueError:
+        return POINTER_PACE_DEFAULT_MS / 1000.0
+    if not math.isfinite(ms) or ms <= 0:
+        return 0.0
+    return ms / 1000.0
+
+
+class _PointerPacer:
+    """Spreads bursts of absolute pointer moves over display-rate beats.
+
+    A client on Wi-Fi delivers its `m` messages in clumps -- nothing for a
+    150 ms stretch, then eight or ten inside a millisecond. KWin repaints once
+    per clump of `pointer_motion_absolute`, so a dragged window stalls and then
+    jumps. A move arriving at least half an interval after the last injection,
+    with nothing queued, is injected at once; a denser one is queued and a
+    timer task injects one position per beat. Every arrival restarts a
+    countdown of `POINTER_PACE_DRAIN_BEATS` beats, and each beat takes
+    `ceil(len(queue) / beats_left)` entries and injects only the last, so the
+    newest move lands within three beats (50 ms at 60 Hz): a clump of ten
+    injects its 4th, 7th and 10th.
+
+    Only pure moves are paced. Anything that must land at the current position
+    (a button change, a wheel tick, a relative move, another display) calls
+    `flush()` first, which injects the newest queued position and drops the
+    rest, so ordering against the click is kept.
+
+    All methods run on the event loop.
+    """
+
+    def __init__(self, inject: Callable[[int, int, int, str], Any],
+                 interval_s: float,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], Any] = asyncio.sleep) -> None:
+        """
+        Args:
+            inject: Coroutine function `(x, y, button_mask, display_id)` that
+                injects one absolute move.
+            interval_s: Beat length in seconds; must be positive.
+            clock: Monotonic clock in seconds, injectable for tests.
+            sleep: Awaitable sleep, injectable for tests.
+        """
+        self._inject = inject
+        self.interval_s = interval_s
+        self._clock = clock
+        self._sleep = sleep
+        self._queue: deque = deque()
+        self._last_inject: Optional[float] = None
+        self._task: Optional[asyncio.Task] = None
+        self._beats_left = POINTER_PACE_DRAIN_BEATS
+        # Lifetime counters: moves that waited for a beat, and queued moves
+        # dropped because a later one in the same beat or flush superseded them.
+        self.queued = 0
+        self.coalesced = 0
+
+    @property
+    def pending(self) -> int:
+        """Moves waiting for a beat."""
+        return len(self._queue)
+
+    async def submit(self, x: int, y: int, button_mask: int, display_id: str) -> None:
+        """Inject a pure absolute move now, or queue it when moves come too densely."""
+        if self._queue and self._queue[-1][3] != display_id:
+            await self.flush()
+        now = self._clock()
+        if not self._queue and (self._last_inject is None
+                                or now - self._last_inject
+                                >= self.interval_s * POINTER_PACE_IMMEDIATE_FRACTION):
+            self._last_inject = now
+            await self._inject(x, y, button_mask, display_id)
+            return
+        self._queue.append((x, y, button_mask, display_id))
+        self._beats_left = POINTER_PACE_DRAIN_BEATS
+        self.queued += 1
+        if self._task is None or self._task.done():
+            self._task = asyncio.get_running_loop().create_task(self._run())
+
+    async def flush(self) -> None:
+        """Inject only the newest queued move and drop the rest, synchronously."""
+        if not self._queue:
+            return
+        entry = self._queue[-1]
+        self.coalesced += len(self._queue) - 1
+        self._queue.clear()
+        self._last_inject = self._clock()
+        await self._inject(*entry)
+
+    async def _run(self) -> None:
+        """Inject one queued position per beat until the queue is empty."""
+        while self._queue:
+            last = self._last_inject
+            delay = self.interval_s if last is None else self.interval_s - (self._clock() - last)
+            if delay > 0:
+                await self._sleep(delay)
+            # A flush while asleep may have emptied it.
+            if not self._queue:
+                break
+            take = max(1, math.ceil(len(self._queue) / self._beats_left))
+            self._beats_left = max(1, self._beats_left - 1)
+            for _ in range(take - 1):
+                self._queue.popleft()
+            self.coalesced += take - 1
+            entry = self._queue.popleft()
+            self._last_inject = self._clock()
+            try:
+                await self._inject(*entry)
+            except Exception as e:
+                logger_webrtc_input.warning(f"Failed to inject paced pointer move: {e}")
+
 
 def gamepad_slot_denied(msg: str, role: Optional[str], slot: Optional[int],
                         is_secure: bool) -> bool:
@@ -5537,6 +5665,48 @@ class WebRTCInput:
         if sent and self.xdisplay:
             self.xdisplay.flush()
 
+    def _kwin_pointer_pacer(self) -> Optional[_PointerPacer]:
+        """The pacer for absolute moves on the KWin host path, or None elsewhere.
+
+        Created on first use; None when `MUELSYSE_POINTER_PACE_MS` disables it
+        or the session injects through anything but the KWin host backend.
+        """
+        if not (getattr(self, "_external_wayland_host", False)
+                and getattr(self, "_wayland_host_backend", None) == "kwin"):
+            return None
+        pacer = getattr(self, "_pointer_pacer", None)
+        if pacer is None:
+            interval_s = pointer_pace_interval_s()
+            if interval_s <= 0:
+                return None
+
+            async def _inject(x: int, y: int, button_mask: int, display_id: str) -> None:
+                await self.send_x11_mouse(x, y, button_mask, 0, False, display_id=display_id)
+
+            pacer = self._pointer_pacer = _PointerPacer(_inject, interval_s)
+        return pacer
+
+    async def _route_pointer_message(self, x: int, y: int, button_mask: int,
+                                     scroll_magnitude: int, relative: bool,
+                                     display_id: str) -> None:
+        """Hand an `m`/`m2` message to the KWin pointer pacer or straight to injection.
+
+        A pure absolute move (held buttons unchanged, no wheel) is paced; any
+        other message first flushes the pacer so it lands where the pointer
+        was last sent, then is applied as before.
+        """
+        pacer = self._kwin_pointer_pacer()
+        if pacer is None:
+            await self.send_x11_mouse(x, y, button_mask, scroll_magnitude, relative,
+                                      display_id=display_id)
+            return
+        if not relative and scroll_magnitude == 0 and button_mask == self.button_mask:
+            await pacer.submit(x, y, button_mask, display_id)
+            return
+        await pacer.flush()
+        await self.send_x11_mouse(x, y, button_mask, scroll_magnitude, relative,
+                                  display_id=display_id)
+
     async def send_x11_mouse(self, x: int, y: int, button_mask: int,
                              scroll_magnitude: int, relative: bool = False,
                              display_id: str = 'primary') -> None:
@@ -8027,7 +8197,7 @@ class WebRTCInput:
             # Dropped rather than defaulted: a default would warp to the origin.
             try: x, y, button_mask, scroll_magnitude = [int(i) for i in toks[1:]]
             except (ValueError, IndexError): return
-            try: await self.send_x11_mouse(x, y, button_mask, scroll_magnitude, relative, display_id=display_id)
+            try: await self._route_pointer_message(x, y, button_mask, scroll_magnitude, relative, display_id)
             except Exception as e: logger_webrtc_input.warning(f"Failed to set mouse cursor: {e}")
         elif msg_type == "ws":
             try: dx, dy = float(toks[1]), float(toks[2])
