@@ -403,6 +403,7 @@ use smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server:
 
 use wayland::cursor::{Cursor, CursorJob};
 use wayland::frontend::{AppState, ClientState, FocusTarget, FramePace, GpuEncoder, TickTrigger, next_serial, wayland_time, wayland_utime};
+use wayland::host::HostInput;
 
 smithay::backend::renderer::element::render_elements! {
     pub CompositionElements<R, E> where R: ImportAll + ImportMem;
@@ -852,6 +853,9 @@ pub enum ThreadCommand {
     /// time costs a channel send and a calloop wake per event, which competes with the
     /// render loop on the same thread; the caller still decides the sequence.
     KeyboardKeys { events: Vec<(u32, u32)> },
+    /// Input the caller already wrote to KWin itself (the KWin direct input path); only the
+    /// input bookkeeping runs, and `motion` marks a pointer move.
+    InputNoted { motion: bool },
     /// Set the seat's BASE keymap from a full XKB_KEYMAP_FORMAT_TEXT_V1 string. The
     /// compositor's keymap policy rebuilds on top: overlay binds are re-spliced onto the new
     /// base (same keycodes) and the combined keymap is applied in one swap.
@@ -5094,8 +5098,14 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                     | ThreadCommand::PointerRelativeMotion { .. }
                     | ThreadCommand::PointerButton { .. }
                     | ThreadCommand::PointerAxis { .. }
+                    | ThreadCommand::InputNoted { .. }
             );
-            if matches!(cmd, ThreadCommand::PointerMotion { .. } | ThreadCommand::PointerRelativeMotion { .. }) {
+            if matches!(
+                cmd,
+                ThreadCommand::PointerMotion { .. }
+                    | ThreadCommand::PointerRelativeMotion { .. }
+                    | ThreadCommand::InputNoted { motion: true }
+            ) {
                 crate::perf::pointer_command();
                 note_pointer_motion(state);
             }
@@ -5321,7 +5331,7 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                 ThreadCommand::KeyboardKeys { events } => {
                     for (scancode, key_state_val) in events {
                         if let Some(host) = state.host.as_ref() {
-                            host.key(scancode, key_state_val > 0);
+                            host.inject(host_key(scancode, key_state_val));
                             continue;
                         }
                         let key_state = if key_state_val > 0 {
@@ -5343,9 +5353,10 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                         }
                     }
                 }
+                ThreadCommand::InputNoted { .. } => {}
                 ThreadCommand::KeyboardKey { scancode, state: key_state_val } => {
                     if let Some(host) = state.host.as_ref() {
-                        host.key(scancode, key_state_val > 0);
+                        host.inject(host_key(scancode, key_state_val));
                         return;
                     }
                     let key_state = if key_state_val > 0 { KeyState::Pressed } else { KeyState::Released };
@@ -5448,7 +5459,7 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                 }
                 ThreadCommand::PointerMotion { x, y } => {
                     if let Some(host) = state.host.as_ref() {
-                        host.pointer_motion_abs(x, y);
+                        host.inject(HostInput::MotionAbs { x, y });
                         return;
                     }
                     let serial = next_serial();
@@ -5517,7 +5528,7 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                 }
                 ThreadCommand::PointerRelativeMotion { dx, dy } => {
                     if let Some(host) = state.host.as_ref() {
-                        host.pointer_motion_rel(dx, dy);
+                        host.inject(HostInput::MotionRel { dx, dy });
                         return;
                     }
                     // A nested KWin drops the delta the seat's relative_motion carries;
@@ -5588,7 +5599,7 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                 }
                 ThreadCommand::PointerButton { btn, state: btn_state_val } => {
                     if let Some(host) = state.host.as_ref() {
-                        host.pointer_button(btn, btn_state_val > 0);
+                        host.inject(host_button(btn, btn_state_val));
                         return;
                     }
                     let serial = next_serial();
@@ -5614,7 +5625,7 @@ fn run_wayland_thread(cfg: WaylandThreadConfig) {
                 }
                 ThreadCommand::PointerAxis { x, y } => {
                     if let Some(host) = state.host.as_ref() {
-                        host.pointer_axis(x, y);
+                        host.inject(HostInput::Axis { dx: x, dy: y });
                         return;
                     }
                     let time = wayland_time();
@@ -6050,6 +6061,40 @@ impl WaylandBackend {
         let _ = self.wake_tx.send(());
         Ok(())
     }
+
+    /// Under a KWin host session, write `input` to KWin on the calling thread (GIL
+    /// released) rather than queueing it for the compositor thread, which only drains
+    /// commands between its render and encode work. The thread still hears of the input
+    /// through `InputNoted`. False when not in that mode or KWin did not take it; the
+    /// caller then queues the command as before.
+    fn try_kwin_direct(&self, py: Python<'_>, input: HostInput, motion: bool) -> bool {
+        if !kwin_direct_input_active() || !py.detach(|| input.send_kwin()) {
+            return false;
+        }
+        let _ = self.send(ThreadCommand::InputNoted { motion });
+        true
+    }
+}
+
+/// `PIXELFLUX_KWIN_DIRECT_INPUT=0` keeps KWin host input on the compositor thread's queue.
+fn kwin_direct_input_enabled(var: Option<&str>) -> bool {
+    var != Some("0")
+}
+
+fn kwin_direct_input_active() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        kwin_direct_input_enabled(std::env::var("PIXELFLUX_KWIN_DIRECT_INPUT").ok().as_deref())
+    }) && crate::wayland::host::kwin_session_live()
+}
+
+/// A key command's arguments as host input: `scancode` is already an xkb keycode.
+fn host_key(scancode: u32, state: u32) -> HostInput {
+    HostInput::Key { xkb_keycode: scancode, pressed: state > 0 }
+}
+
+fn host_button(btn: u32, state: u32) -> HostInput {
+    HostInput::Button { btn, pressed: state > 0 }
 }
 
 #[pymethods]
@@ -6294,7 +6339,10 @@ impl WaylandBackend {
         Ok(())
     }
 
-    fn inject_key(&self, scancode: u32, state: u32) -> PyResult<()> {
+    fn inject_key(&self, py: Python<'_>, scancode: u32, state: u32) -> PyResult<()> {
+        if self.try_kwin_direct(py, host_key(scancode, state), false) {
+            return Ok(());
+        }
         self.send(ThreadCommand::KeyboardKey { scancode, state })
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to inject key: {}", e)))?;
         Ok(())
@@ -6302,9 +6350,24 @@ impl WaylandBackend {
 
     /// Inject an ordered run of `(keycode, state)` events as one message, so a paste
     /// costs one channel send and one wake instead of one per event.
-    fn inject_keys(&self, events: Vec<(u32, u32)>) -> PyResult<()> {
+    fn inject_keys(&self, py: Python<'_>, mut events: Vec<(u32, u32)>) -> PyResult<()> {
         if events.is_empty() {
             return Ok(());
+        }
+        if kwin_direct_input_active() {
+            let sent = py.detach(|| {
+                events
+                    .iter()
+                    .take_while(|&&(scancode, state)| host_key(scancode, state).send_kwin())
+                    .count()
+            });
+            if sent > 0 {
+                let _ = self.send(ThreadCommand::InputNoted { motion: false });
+                events.drain(..sent);
+            }
+            if events.is_empty() {
+                return Ok(());
+            }
         }
         self.send(ThreadCommand::KeyboardKeys { events })
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to inject keys: {}", e)))?;
@@ -6349,7 +6412,10 @@ impl WaylandBackend {
         }
     }
 
-    fn inject_mouse_move(&self, x: f64, y: f64) -> PyResult<()> {
+    fn inject_mouse_move(&self, py: Python<'_>, x: f64, y: f64) -> PyResult<()> {
+        if self.try_kwin_direct(py, HostInput::MotionAbs { x, y }, true) {
+            return Ok(());
+        }
         self.send(ThreadCommand::PointerMotion { x, y })
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to inject motion: {}", e)))?;
         Ok(())
@@ -6359,19 +6425,28 @@ impl WaylandBackend {
     /// `zwp_relative_pointer_v1` event; a nested KWin session, which forwards no
     /// delta from its host seat, receives it through its `org_kde_kwin_fake_input`
     /// device on the app compositor socket named by `set_app_wayland_display`.
-    fn inject_relative_mouse_move(&self, dx: f64, dy: f64) -> PyResult<()> {
+    fn inject_relative_mouse_move(&self, py: Python<'_>, dx: f64, dy: f64) -> PyResult<()> {
+        if self.try_kwin_direct(py, HostInput::MotionRel { dx, dy }, true) {
+            return Ok(());
+        }
         self.send(ThreadCommand::PointerRelativeMotion { dx, dy })
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to inject relative motion: {}", e)))?;
         Ok(())
     }
 
-    fn inject_mouse_button(&self, btn: u32, state: u32) -> PyResult<()> {
+    fn inject_mouse_button(&self, py: Python<'_>, btn: u32, state: u32) -> PyResult<()> {
+        if self.try_kwin_direct(py, host_button(btn, state), false) {
+            return Ok(());
+        }
         self.send(ThreadCommand::PointerButton { btn, state })
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to inject button: {}", e)))?;
         Ok(())
     }
 
-    fn inject_mouse_scroll(&self, x: f64, y: f64) -> PyResult<()> {
+    fn inject_mouse_scroll(&self, py: Python<'_>, x: f64, y: f64) -> PyResult<()> {
+        if self.try_kwin_direct(py, HostInput::Axis { dx: x, dy: y }, false) {
+            return Ok(());
+        }
         self.send(ThreadCommand::PointerAxis { x, y })
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to inject axis: {}", e)))?;
         Ok(())
@@ -7358,11 +7433,11 @@ impl ScreenCapture {
     }
 
     fn inject_key(&self, py: Python<'_>, scancode: u32, state: u32) -> PyResult<()> {
-        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_key(scancode, state))
+        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_key(py, scancode, state))
     }
     /// Inject an ordered run of `(keycode, state)` events in one message.
     fn inject_keys(&self, py: Python<'_>, events: Vec<(u32, u32)>) -> PyResult<()> {
-        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_keys(events))
+        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_keys(py, events))
     }
     fn set_keymap_string(&self, py: Python<'_>, text: String) -> PyResult<()> {
         wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().set_keymap_string(text))
@@ -7728,16 +7803,16 @@ impl ScreenCapture {
         });
     }
     fn inject_mouse_move(&self, py: Python<'_>, x: f64, y: f64) -> PyResult<()> {
-        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_mouse_move(x, y))
+        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_mouse_move(py, x, y))
     }
     fn inject_relative_mouse_move(&self, py: Python<'_>, dx: f64, dy: f64) -> PyResult<()> {
-        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_relative_mouse_move(dx, dy))
+        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_relative_mouse_move(py, dx, dy))
     }
     fn inject_mouse_button(&self, py: Python<'_>, btn: u32, state: u32) -> PyResult<()> {
-        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_mouse_button(btn, state))
+        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_mouse_button(py, btn, state))
     }
     fn inject_mouse_scroll(&self, py: Python<'_>, x: f64, y: f64) -> PyResult<()> {
-        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_mouse_scroll(x, y))
+        wayland_backend_running(py).map_or(Ok(()), |be| be.bind(py).borrow().inject_mouse_scroll(py, x, y))
     }
     /// Toggle compositing the cursor into captured frames (the alternative to the
     /// out-of-band cursor callback): the X11 grab re-reads the flag per frame, Wayland
@@ -8654,5 +8729,34 @@ mod auto_gpu_token_tests {
         for t in ["nvidia", "amdgpu", "0x10de", "qcom"] {
             assert!(!card_matches_token(t, &bare));
         }
+    }
+}
+
+#[cfg(test)]
+mod kwin_direct_input_tests {
+    //! Invariant: the KWin direct input path stays on unless the switch is exactly "0", and
+    //! hands KWin the same keycode and pressed state the compositor thread's host branch would.
+    use super::{host_button, host_key, kwin_direct_input_active, kwin_direct_input_enabled};
+    use crate::wayland::host::HostInput;
+
+    #[test]
+    fn only_zero_disables_the_switch() {
+        assert!(kwin_direct_input_enabled(None));
+        assert!(kwin_direct_input_enabled(Some("1")));
+        assert!(kwin_direct_input_enabled(Some("")));
+        assert!(!kwin_direct_input_enabled(Some("0")));
+    }
+
+    #[test]
+    fn inactive_without_a_kwin_session() {
+        assert!(!kwin_direct_input_active());
+    }
+
+    #[test]
+    fn command_arguments_map_to_host_input() {
+        assert_eq!(host_key(38, 1), HostInput::Key { xkb_keycode: 38, pressed: true });
+        assert_eq!(host_key(38, 0), HostInput::Key { xkb_keycode: 38, pressed: false });
+        assert_eq!(host_button(0x110, 2), HostInput::Button { btn: 0x110, pressed: true });
+        assert_eq!(host_button(0x110, 0), HostInput::Button { btn: 0x110, pressed: false });
     }
 }

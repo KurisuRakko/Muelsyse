@@ -29,7 +29,7 @@
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -871,6 +871,48 @@ impl HostKeyboardState {
     }
 }
 
+/// KWin host sessions alive in this process (counted from a successful `connect` to the
+/// session's drop). While one is, input can bypass the compositor thread: see
+/// [`kwin_session_live`].
+static KWIN_SESSIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a KWin host session is alive. Its input goes to KWin's fake-input device
+/// (a process-wide, thread-safe connection), never through the session's own Wayland
+/// objects, so any thread may write it via [`HostInput::send_kwin`].
+pub fn kwin_session_live() -> bool {
+    KWIN_SESSIONS.load(Ordering::Acquire) > 0
+}
+
+/// One input event in host-session terms: xkb keycodes (evdev + 8), pressed flags, and
+/// union-layout units. The compositor thread's host branches and the KWin direct input
+/// path both build it from the same command arguments, so the two cannot drift.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HostInput {
+    Key { xkb_keycode: u32, pressed: bool },
+    MotionAbs { x: f64, y: f64 },
+    MotionRel { dx: f64, dy: f64 },
+    Button { btn: u32, pressed: bool },
+    Axis { dx: f64, dy: f64 },
+}
+
+impl HostInput {
+    /// The KWin backend's delivery: KWin's private fake-input protocol, callable from any
+    /// thread. False when the device did not take it (not connected yet, or the connection
+    /// dropped); a keycode below 8 has no evdev code and is dropped as delivered.
+    pub fn send_kwin(self) -> bool {
+        use crate::wayland::kwin_input::KWinInputClipboardBridge as Kwin;
+        match self {
+            HostInput::Key { xkb_keycode, pressed } => {
+                xkb_keycode < 8 || Kwin::keyboard_key(xkb_keycode - 8, pressed)
+            }
+            HostInput::MotionAbs { x, y } => Kwin::pointer_motion_abs(x, y),
+            HostInput::MotionRel { dx, dy } => Kwin::pointer_motion_rel(dx, dy),
+            HostInput::Button { btn, pressed } => Kwin::pointer_button(btn, pressed),
+            HostInput::Axis { dx, dy } => Kwin::pointer_axis(dx, dy),
+        }
+    }
+}
+
 /// The calloop-side session: input proxies plus one capture handle per output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostBackend {
@@ -1085,6 +1127,9 @@ impl HostSession {
             eprintln!(
                 "[HostCapture] base keymap unavailable: keys are dropped until selkies uploads its keymap."
             );
+        }
+        if backend == HostBackend::Kwin {
+            KWIN_SESSIONS.fetch_add(1, Ordering::AcqRel);
         }
         Ok(Self {
             conn,
@@ -1426,12 +1471,7 @@ impl HostSession {
     /// Key event in xkb numbering (evdev + 8), matching the seat injectors.
     pub fn key(&self, xkb_keycode: u32, pressed: bool) {
         if self.backend == HostBackend::Kwin {
-            if xkb_keycode >= 8 {
-                crate::wayland::kwin_input::KWinInputClipboardBridge::keyboard_key(
-                    xkb_keycode - 8,
-                    pressed,
-                );
-            }
+            HostInput::Key { xkb_keycode, pressed }.send_kwin();
             return;
         }
         let Some(vk) = &self.vk else { return };
@@ -1463,9 +1503,23 @@ impl HostSession {
         (w, h)
     }
 
+    /// Deliver one event through this session's backend (the compositor thread's path).
+    pub fn inject(&self, input: HostInput) -> bool {
+        match input {
+            HostInput::Key { xkb_keycode, pressed } => {
+                self.key(xkb_keycode, pressed);
+                true
+            }
+            HostInput::MotionAbs { x, y } => self.pointer_motion_abs(x, y),
+            HostInput::MotionRel { dx, dy } => self.pointer_motion_rel(dx, dy),
+            HostInput::Button { btn, pressed } => self.pointer_button(btn, pressed),
+            HostInput::Axis { dx, dy } => self.pointer_axis(dx, dy),
+        }
+    }
+
     pub fn pointer_motion_abs(&self, x: f64, y: f64) -> bool {
         if self.backend == HostBackend::Kwin {
-            return crate::wayland::kwin_input::KWinInputClipboardBridge::pointer_motion_abs(x, y);
+            return HostInput::MotionAbs { x, y }.send_kwin();
         }
         let Some(vp) = &self.vptr else { return false };
         let (w, h) = self.extent();
@@ -1487,7 +1541,7 @@ impl HostSession {
     /// stays put, so every warp would read as the whole distance from the lock point.
     pub fn pointer_motion_rel(&self, dx: f64, dy: f64) -> bool {
         if self.backend == HostBackend::Kwin {
-            return crate::wayland::kwin_input::KWinInputClipboardBridge::pointer_motion_rel(dx, dy);
+            return HostInput::MotionRel { dx, dy }.send_kwin();
         }
         let Some(vp) = &self.vptr else { return false };
         if dx == 0.0 && dy == 0.0 {
@@ -1501,7 +1555,7 @@ impl HostSession {
 
     pub fn pointer_button(&self, btn: u32, pressed: bool) -> bool {
         if self.backend == HostBackend::Kwin {
-            return crate::wayland::kwin_input::KWinInputClipboardBridge::pointer_button(btn, pressed);
+            return HostInput::Button { btn, pressed }.send_kwin();
         }
         let Some(vp) = &self.vptr else { return false };
         vp.button(
@@ -1520,7 +1574,7 @@ impl HostSession {
     /// source follows each axis request, which is the axis it applies to on wlroots.
     pub fn pointer_axis(&self, dx: f64, dy: f64) -> bool {
         if self.backend == HostBackend::Kwin {
-            return crate::wayland::kwin_input::KWinInputClipboardBridge::pointer_axis(dx, dy);
+            return HostInput::Axis { dx, dy }.send_kwin();
         }
         let Some(vp) = &self.vptr else { return false };
         if dx == 0.0 && dy == 0.0 {
@@ -1550,6 +1604,15 @@ impl HostSession {
 // Dropping the session drops every channel sender and wake-pipe write end; the
 // capture and control threads observe the disconnect (poll sees POLLHUP) and
 // exit on their own.
+impl Drop for HostSession {
+    fn drop(&mut self) {
+        // The KWin direct input path stops with the session (a reaped host, a stopped
+        // compositor thread); its callers fall back to the command queue.
+        if self.backend == HostBackend::Kwin {
+            KWIN_SESSIONS.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Control thread: pumps the primary connection and applies layout requests.
