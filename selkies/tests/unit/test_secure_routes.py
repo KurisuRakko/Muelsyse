@@ -3,12 +3,12 @@
 
 The real auth middleware runs on a stub application carrying the route set the
 server registers. With a master token set and Basic auth off, uploads, the file
-listing, TURN and metrics want a provisioned session token — as a Bearer header,
+listing, TURN, metrics and the direct-endpoint list want a provisioned session token — as a Bearer header,
 as ``?token=``, or as the cookie the web client sets — or the master token;
 the control endpoints (``/api/tokens``, ``/api/switch``) take the master token
 as ``Authorization: Bearer`` or, beside a Basic login's Authorization header,
 in the named fallback header; the
-liveness routes, the static client and the WebSocket handshakes (which carry
+liveness routes (the round-trip probe among them), the static client and the WebSocket handshakes (which carry
 their own token gate) stay as they are. A viewer-role token is refused where
 the view-only password is. With Basic auth on as well, a token is accepted
 beside the Basic credentials; without a master token nothing changes.
@@ -105,6 +105,9 @@ class _App:
         app["settings"] = settings
         app.router.add_get(f"{prefix}/api/status", self._ok)
         app.router.add_get(f"{prefix}/api/health", self._ok)
+        app.router.add_get(f"{prefix}/api/ping", self._ok)
+        app.router.add_route("OPTIONS", f"{prefix}/api/ping", self._ok)
+        app.router.add_get(f"{prefix}/api/direct-endpoints", self._ok)
         app.router.add_post(f"{prefix}/api/tokens", self._ok)
         app.router.add_post(f"{prefix}/api/switch", self._controller_only)
         app.router.add_post(f"{prefix}/api/upload", self._controller_only)
@@ -157,7 +160,7 @@ def _provision() -> None:
 
 BEARER_CHALLENGE = f'Bearer realm="{AUTH_REALM}"'
 GATED = [("POST", "/api/upload"), ("GET", "/api/files/"), ("GET", "/api/files/sub/a.txt"),
-         ("GET", "/api/turn"), ("GET", "/api/metrics")]
+         ("GET", "/api/turn"), ("GET", "/api/metrics"), ("GET", "/api/direct-endpoints")]
 
 
 async def secure_basic_off() -> None:
@@ -167,9 +170,12 @@ async def secure_basic_off() -> None:
             status, _, challenge = await app.call(method, path)
             check(f"no credential: {method} {path} is refused",
                   status == 401 and challenge == BEARER_CHALLENGE, f"{status} {challenge!r}")
-        for path in ("/api/status", "/api/health", "/", "/index.html"):
+        for path in ("/api/status", "/api/health", "/api/ping", "/", "/index.html"):
             status, _, _ = await app.call("GET", path)
             check(f"no credential: GET {path} stays open", status == 200, status)
+        status, _, _ = await app.call(
+            "OPTIONS", "/api/ping", headers={"Origin": "https://front.example"})
+        check("no credential: the cross-origin ping preflight stays open", status == 200, status)
         for path in ("/api/websockets", "/api/webrtc/signaling"):
             status, _, _ = await app.call(
                 "GET", path, headers={"Upgrade": "websocket", "Connection": "Upgrade"})
@@ -303,6 +309,8 @@ async def secure_basic_on() -> None:
         status, _, challenge = await app.call("POST", "/api/upload")
         check("Basic+token: no credential gets the Basic challenge",
               status == 401 and (challenge or "").startswith("Basic realm="), f"{status} {challenge!r}")
+        status, _, _ = await app.call("GET", "/api/ping", headers={"Origin": "https://front.example"})
+        check("Basic+token: the cross-origin ping skips Basic", status == 200, status)
         status, _, challenge = await app.call("GET", "/")
         check("Basic+token: the page itself wants Basic", status == 401 and (challenge or "").startswith("Basic"),
               f"{status} {challenge!r}")

@@ -1106,6 +1106,12 @@ SETTING_DEFINITIONS: List[Dict[str, Any]] = [
         "default": "",
         "help": "Comma-separated browser Origins allowed to open the streaming WebSocket (cross-site WebSocket-hijacking guard). Empty (default) allows only same-origin plus non-browser clients that send no Origin; use '*' to allow any origin.",
     },
+    {
+        "name": "direct_ws_urls",
+        "type": "str",
+        "default": "",
+        "help": "Comma-separated https base URLs that reach this same server around the front door the page was loaded through (a tailnet address beside a tunnel, say), e.g. https://host.example.ts.net:8444/. A WebSocket client times api/ping on each and on its own origin and opens the streaming socket on the fastest, or on the route the user picks; the page and every other request stay on its origin. The socket then opens cross-site, so the page's origin must be listed in allowed_origins. Empty (default) disables it; entries that are not https URLs are ignored.",
+    },
 ]
 
 # Secrets, flagged sensitive so consumers keep them out of client broadcasts.

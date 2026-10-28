@@ -8,7 +8,11 @@
  * WebSocket streaming core: the page-side half of the WebSocket transport,
  * started by selkies-core.js when the stored stream mode is `websockets`.
  *
- * One socket at `<route prefix>/api/websockets` carries the whole session. It
+ * One socket at `<route prefix>/api/websockets` carries the whole session,
+ * on the page's origin or on a direct endpoint the server lists, whichever
+ * the stored route preference and lib/ws-route.js's round-trip race pick; a
+ * direct socket that closes or stays silent before its first message marks
+ * the tab and reconnects on the origin (`abandonDirectRoute`). It
  * is read in a worker (`SOCKET_WORKER_SRC`, reached through
  * `WorkerWebSocket`), which passes audio straight to the decoder and the
  * playback worklet, routes video straight to the video worker while it
@@ -65,11 +69,12 @@
  * `settings`, `getStats`, `clipboardUpdateFromUI`, `clipboardImageUpdate`,
  * `pipelineStatusUpdate`, `pipelineControl`, `audioDeviceSelected`,
  * `gamepadControl`, `requestFullscreen`, `command`, `touchinput:trackpad`,
- * `touchinput:touch`, `touchinput:options` and `sidebarVisibilityChanged`, and posts
+ * `touchinput:touch`, `touchinput:options`, `sidebarVisibilityChanged` and `wsRoute`
+ * (a route pick, or with none a request for `wsRouteUpdate`), and posts
  * `pipelineStatusUpdate`, `sidebarButtonStatusUpdate`, `serverSettings`,
  * `systemApps`, `stats` (to the parent window), `clientRoleUpdate`,
  * `effectiveCursorState`, `scalingDpiFollowed`, `trackpadModeUpdate`, `touchOptionsUpdate`,
- * `clipboardContentUpdate`, the clipboard preview of lib/clipboard-sync.js,
+ * `clipboardContentUpdate`, `wsRouteUpdate`, the clipboard preview of lib/clipboard-sync.js,
  * `fileUpload`,
  * `toggleDashboard` and `toggleTouchGamepad`. The `window` globals it
  * publishes for the dashboards and the tests are `webrtcInput` (the Input
@@ -128,6 +133,8 @@ import { storageKeyForServerKey, resolveSpec, RAW_POINTER_MOTION_SPEC, MAC_CMD_A
 import { getRoutePrefix, getStorageAppName, canDecodeEncoder, canDecodeFullColor, isMacDesktop } from './lib/util.js';
 import { createStripeClock } from './lib/stripe-clock.js';
 import { WebcamCapture, WEBCAM_ENCODER_PREFERENCES } from './lib/webcam-capture.js';
+import { WS_ROUTE_PREFS, fetchDirectEndpoints, resolveWsRoute, measureRtt, routeLabel,
+         wsUrlFromBase } from './lib/ws-route.js';
 
 installAuthGuard();
 installSessionCookie();
@@ -4513,6 +4520,9 @@ function receiveMessage(event) {
     case 'sidebarVisibilityChanged':
       // Accepted for frontends to signal; the core has nothing to throttle.
       break;
+    case 'wsRoute':
+      applyWsRoutePick(message.value);
+      break;
     case 'setScaleLocally':
       if (isSharedMode) {
         console.log("Shared mode: setScaleLocally message ignored (forced true behavior).");
@@ -6446,7 +6456,10 @@ class WorkerWebSocket {
   }
 
   const ws_protocol = location.protocol === 'http:' ? 'ws://' : 'wss://';
-  let websocketEndpointURL = new URL(`${ws_protocol}${window.location.host}${pathname}`);
+  const onDirectRoute = !!(wsRoute && wsRoute.route === 'direct');
+  let websocketEndpointURL = onDirectRoute
+    ? wsUrlFromBase(wsRoute.base)
+    : new URL(`${ws_protocol}${window.location.host}${pathname}`);
   if (isTokenAuthMode) {
       websocketEndpointURL.search = `?token=${authToken}`;
   } else if (isSharedMode) {
@@ -6484,6 +6497,15 @@ class WorkerWebSocket {
   // The socket itself is in a worker, so this handle is what page-side
   // tooling has to observe or close the transport through.
   window.selkiesTransport = websocket;
+  let directRoutePending = onDirectRoute;
+  const directRouteTimer = onDirectRoute
+    ? setTimeout(() => abandonDirectRoute('no message from the server'), DIRECT_FIRST_MESSAGE_TIMEOUT_MS)
+    : null;
+  /** Ends the wait for a direct socket's first message: the route works. */
+  const settleDirectRoute = () => {
+    directRoutePending = false;
+    clearTimeout(directRouteTimer);
+  };
   wireSocketToDecoder();
   // A fresh socket worker holds the divert default; re-point it.
   videoDivertOn = false;
@@ -7861,6 +7883,7 @@ class WorkerWebSocket {
 
   /** Inflates 0x05 frames and routes everything through `__rawWsMessage` in order (see `__wsCtrlChain`). */
   websocket.onmessage = (event) => {
+    if (directRoutePending) settleDirectRoute();
     const d = event.data;
     if (d instanceof ArrayBuffer) {
       if (d.byteLength >= 1 && new Uint8Array(d, 0, 1)[0] === 0x05) {
@@ -7915,6 +7938,11 @@ class WorkerWebSocket {
    */
   websocket.onclose = (event) => {
     console.log('[websockets] Connection closed', event);
+    if (directRoutePending) {
+      settleDirectRoute();
+      abandonDirectRoute(`closed with code ${event.code}`);
+      return;
+    }
     if (window.webrtcInput && typeof window.webrtcInput.clearPendingScroll === 'function') {
         window.webrtcInput.clearPendingScroll();
     }
@@ -8013,10 +8041,131 @@ async function reloadPossiblyFlippingMode() {
   location.reload();
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initWebsockets);
-} else {
+/** Storage key of the user's session-socket route, one of `WS_ROUTE_PREFS`. */
+const WS_ROUTE_KEY = `${storageAppName}_ws_route`;
+/**
+ * sessionStorage key set once a direct socket failed in this tab. Per tab
+ * rather than per page, because the core reconnects by reloading: a flag the
+ * reload cleared would send every retry back to the failing endpoint.
+ */
+const WS_DIRECT_FAILED_KEY = `${storageAppName}_ws_direct_failed`;
+/** How long a direct socket may go without a first message before it counts as failed. */
+const DIRECT_FIRST_MESSAGE_TIMEOUT_MS = 10000;
+
+/**
+ * The session socket's route (lib/ws-route.js), resolved before the socket
+ * opens, with the names the dashboard shows: `available` is false when the
+ * server lists no direct endpoint and the socket stays on the origin.
+ * @type {?Object}
+ */
+let wsRoute = null;
+
+/**
+ * Resolves `wsRoute`: fetches the direct endpoint list and, under the stored
+ * preference, times the candidates, logging the round trips and the pick.
+ * @returns {Promise<Object>}
+ */
+async function chooseWsRoute() {
+  const originBase = `${window.location.origin}${getRoutePrefix()}/`;
+  const { urls, behindCloudflare } = await fetchDirectEndpoints(originBase, { headers: sessionAuthHeaders() });
+  let pref = 'auto';
+  let directFailed = false;
+  try {
+    pref = window.localStorage.getItem(WS_ROUTE_KEY) || 'auto';
+    directFailed = window.sessionStorage.getItem(WS_DIRECT_FAILED_KEY) === '1';
+  } catch (e) { /* storage denied: auto, nothing failed yet */ }
+  if (!WS_ROUTE_PREFS.includes(pref)) pref = 'auto';
+  const choice = await resolveWsRoute({ originBase, directBases: urls, pref, directFailed });
+  const nameOf = (c) => routeLabel(c.base, c.route === 'origin' && behindCloudflare);
+  const route = {
+    ...choice, pref, available: urls.length > 0, label: nameOf(choice),
+    originLabel: nameOf(choice.candidates[0]),
+    directLabel: urls.length ? nameOf(choice.candidates[1]) : null,
+  };
+  if (route.available) {
+    const timings = choice.candidates
+      .map((c) => `${nameOf(c)} ${c.rttMs === null ? '-' : `${c.rttMs.toFixed(1)} ms`}`).join(', ');
+    console.info(`[websockets] route ${pref}: ${timings} -> ${route.label} (${route.base})` +
+      (choice.fallback ? '; a direct socket already failed in this tab' : ''));
+  }
+  return route;
+}
+
+/** Posts `wsRouteUpdate`, the route state the dashboard's route picker shows. */
+function postWsRouteUpdate() {
+  const r = wsRoute;
+  window.postMessage({
+    type: 'wsRouteUpdate',
+    available: !!(r && r.available),
+    pref: r ? r.pref : 'auto',
+    route: r ? r.route : 'origin',
+    label: r ? r.label : null,
+    rttMs: r ? r.rttMs : null,
+    fallback: !!(r && r.fallback),
+    labels: { direct: r ? r.directLabel : null, origin: r ? r.originLabel : null },
+  }, window.location.origin);
+}
+
+/**
+ * Gives up on a direct socket that never delivered a message: marks the tab
+ * (`WS_DIRECT_FAILED_KEY`) and reconnects on the origin through the reload
+ * every reconnect takes.
+ * @param {string} why What happened, for the log.
+ */
+function abandonDirectRoute(why) {
+  console.warn(`[websockets] direct route ${wsRoute && wsRoute.base} failed (${why}); reconnecting via the page origin.`);
+  try { window.sessionStorage.setItem(WS_DIRECT_FAILED_KEY, '1'); } catch (e) { /* the reload retries direct */ }
+  if (websocket) {
+    websocket.onclose = null;
+    try { websocket.close(); } catch (e) { /* already closed */ }
+  }
+  window.location.reload();
+}
+
+/**
+ * Applies a route the user picked in the dashboard: stores it, forgets an
+ * earlier direct failure, and reconnects by reloading so the new socket
+ * takes it. Anything else, a repeat pick or a bare query, answers with the
+ * current `wsRouteUpdate`.
+ * @param {*} value The picked preference.
+ */
+function applyWsRoutePick(value) {
+  if (wsRoute && wsRoute.available && WS_ROUTE_PREFS.includes(value) && value !== wsRoute.pref) {
+    safeSetItem(WS_ROUTE_KEY, value);
+    try { window.sessionStorage.removeItem(WS_DIRECT_FAILED_KEY); } catch (e) { /* ignore */ }
+    console.info(`[websockets] route set to ${value}; reconnecting.`);
+    window.location.reload();
+    return;
+  }
+  postWsRouteUpdate();
+}
+
+/**
+ * Resolves the route, then runs the connection. A route taken without timing
+ * (picked, or the fallback) is timed once the socket is on its way, for the
+ * dashboard's readout.
+ */
+async function startWebsockets() {
+  try {
+    wsRoute = await wsRoutePromise;
+  } catch (e) {
+    console.warn('[websockets] route resolution failed; staying on the page origin:', e);
+  }
   initWebsockets();
+  postWsRouteUpdate();
+  if (wsRoute && wsRoute.available && wsRoute.rttMs === null) {
+    wsRoute.rttMs = await measureRtt(wsRoute.base);
+    postWsRouteUpdate();
+  }
+}
+
+// Started at once so the list fetch and the timing overlap the document load.
+const wsRoutePromise = chooseWsRoute();
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startWebsockets);
+} else {
+  startWebsockets();
 }
 
 /**

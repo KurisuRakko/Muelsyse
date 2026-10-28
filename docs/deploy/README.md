@@ -70,6 +70,37 @@ Selkies ends up listening on `127.0.0.1` only (`SELKIES_ADDR`/`SELKIES_PORT`
 in the unit file); put your reverse proxy, tunnel, or SSH port-forward in
 front of that.
 
+### Direct WebSocket route (optional)
+
+With more than one way in — say a Cloudflare tunnel with SSO for the page,
+and `tailscale serve` terminating TLS on the tailnet — the stream socket can
+take whichever is faster while the page, uploads and every other request stay
+on the URL the page was loaded from. Set two values in `~/.config/muelsyse/env`
+and redeploy the Selkies unit:
+
+```sh
+MUELSYSE_ALLOWED_ORIGINS=https://desktop.example.com      # the page's origin
+MUELSYSE_DIRECT_WS_URLS=https://host.example.ts.net:8444/ # comma-separated https bases
+```
+
+They become `SELKIES_ALLOWED_ORIGINS` and `SELKIES_DIRECT_WS_URLS`; both empty
+(the default) leaves the feature off. Before connecting, the client times a few
+`api/ping` round trips to its own origin and to each listed base, drops any
+that fail or take over 1.5 s, and opens the socket on the lowest median —
+nothing is preferred in advance. The browser console logs one
+`[websockets] route ...` line with every timing and the pick. The video section
+of the sidebar offers Auto / the direct route / the page origin (stored per
+browser, applied by reconnecting) and shows the route in use with its round
+trip. A direct socket that closes before its first message falls back to the
+origin for the rest of that tab. The direct path is unauthenticated apart from
+whatever guards it (a tailnet, here), so keep it reachable only from where you
+would also accept the page's login being skipped, and keep Selkies' Basic auth
+off or use a master token: a cross-site socket carries no Basic credentials.
+
+Chrome's Local Network Access may ask once per site whether the page may reach
+devices on the local network, because a tailnet name resolves to a `100.x`
+address; allow it, or the direct route simply never wins.
+
 ### Development/verification scripts
 
 `scripts/run-kwin-poc.sh`, `scripts/run-kwin-adapter-poc.sh`, and

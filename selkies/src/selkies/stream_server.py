@@ -728,6 +728,40 @@ async def _bind_listen_sockets(addr: str, port: int) -> List[socket.socket]:
     return socks
 
 
+def direct_ws_urls(settings: Any, warn: bool = False) -> List[str]:
+    """The ``direct_ws_urls`` setting as the base URLs a client may open the
+    session socket on, each ending in ``/`` so a route joins it as a relative
+    path. Only https entries with a host survive: the client derives ``wss``
+    from the scheme, and a plain-http base would put the socket in the clear
+    on a path the page's own TLS never covered.
+
+    Args:
+        settings: The server settings.
+        warn: Log each entry dropped; set once at startup, not per request.
+
+    Returns:
+        The usable base URLs, in configured order, without duplicates.
+    """
+    urls: List[str] = []
+    for raw in (getattr(settings, "direct_ws_urls", "") or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            parts = urllib.parse.urlsplit(raw)
+        except ValueError:
+            parts = None
+        if parts is None or parts.scheme.lower() != "https" or not parts.hostname:
+            if warn:
+                logger.warning("Ignoring direct_ws_urls entry %r: not an https URL", raw)
+            continue
+        path = parts.path if parts.path.endswith("/") else parts.path + "/"
+        url = urllib.parse.urlunsplit(("https", parts.netloc, path, "", ""))
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
 def _unix_socket_is_live(path: str) -> bool:
     """Return True when something accepts a connection on ``path``, i.e. the
     socket file belongs to a running listener rather than being a leftover from
@@ -753,6 +787,9 @@ AUTH_REALM: str = "Selkies Restricted"
 # Handshakes carrying their own token gate in the ws handlers; the auth
 # middleware exempts exactly these paths, never a mere Upgrade claim.
 WEBSOCKET_ROUTES: Tuple[str, ...] = ("/api/websockets", "/api/webrtc/signaling", "/api/ws")
+# Answered without credentials, Basic or token: they reveal nothing, and the
+# round-trip probe is a cross-origin fetch that can carry neither.
+LIVENESS_ROUTES: Tuple[str, ...] = ("/api/status", "/api/health", "/api/ping")
 # Mirror of the secure-mode session token for requests the client cannot put
 # a header on (the file-manager iframe and its download links).
 SESSION_TOKEN_COOKIE: str = "selkies_token"
@@ -1842,7 +1879,7 @@ class CentralizedStreamServer:
         """Authorize one request and hand it to `handler`, or refuse it.
 
         Layered gates, in order: cross-site WebSocket upgrades are rejected by
-        Origin; health/liveness endpoints pass without credentials; the token
+        Origin; the `LIVENESS_ROUTES` pass without credentials; the token
         and mode-switch control endpoints accept the Bearer master token,
         trying `Authorization` first and the `MASTER_TOKEN_HEADER` fallback
         second for callers whose Authorization header a Basic login in front
@@ -1879,7 +1916,7 @@ class CentralizedStreamServer:
                     request.headers.get("Origin", ""),
                 )
                 return web.Response(status=403, text="Forbidden origin")
-        if path in (f"{api_prefix}/api/status", f"{api_prefix}/api/health"):
+        if path in {f"{api_prefix}{route}" for route in LIVENESS_ROUTES}:
             return await handler(request)
         token_path = path == f"{api_prefix}/api/tokens"
         if settings.master_token and token_path:
@@ -2689,6 +2726,44 @@ class CentralizedStreamServer:
         """GET /api/health: liveness probe, always 200."""
         return web.Response(text="OK")
 
+    async def handle_ping(self, request: web.Request) -> web.Response:
+        """GET/OPTIONS /api/ping: the round-trip probe a client times each
+        candidate session-socket endpoint with (``direct_ws_urls``).
+
+        Empty and never cached, so every sample is one network round trip. The
+        probe arrives cross-origin on a direct endpoint, so an Origin the
+        WebSocket guard would admit (`_is_origin_allowed`) is echoed back for
+        the client to read the answer; any other origin gets no CORS grant and
+        the browser fails the fetch, which drops that candidate exactly as its
+        socket would have been refused. The preflight also grants Private
+        Network Access, which Chromium asks of a public page reaching a
+        private or CGNAT (tailnet) address.
+        """
+        headers = {"Cache-Control": "no-store"}
+        origin = request.headers.get("Origin")
+        if origin and self._is_origin_allowed(request, request.app["settings"]):
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Vary"] = "Origin"
+            if request.method == "OPTIONS":
+                headers["Access-Control-Allow-Methods"] = "GET"
+                headers["Access-Control-Allow-Private-Network"] = "true"
+                headers["Access-Control-Max-Age"] = "600"
+        return web.Response(status=204, headers=headers)
+
+    async def handle_direct_endpoints(self, request: web.Request) -> web.Response:
+        """GET /api/direct-endpoints: the ``direct_ws_urls`` base URLs, as
+        ``{"urls": [...]}``.
+
+        A route of its own rather than a field of the settings payload, because
+        the client needs it before it opens the socket that payload rides on.
+        It authenticates like any other API route, being a map of the server's
+        other front doors.
+        """
+        return web.json_response(
+            {"urls": direct_ws_urls(request.app["settings"])},
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def handle_metrics(self, request: web.Request) -> web.Response:
         """Prometheus exposition of the process-global registry."""
         data = await asyncio.to_thread(generate_latest)
@@ -2972,10 +3047,16 @@ class CentralizedStreamServer:
         api_prefix = self.settings.subfolder
         if api_prefix:
             logger.info(f"Prepending api prefix: {api_prefix!r} to router handlers")
+        direct = direct_ws_urls(self.settings, warn=True)
+        if direct:
+            logger.info("Offering direct WebSocket endpoints: %s", ", ".join(direct))
 
         routes = [
             web.get(f"{api_prefix}/api/status", self.handle_status),
             web.get(f"{api_prefix}/api/health", self.handle_health),
+            web.get(f"{api_prefix}/api/ping", self.handle_ping),
+            web.options(f"{api_prefix}/api/ping", self.handle_ping),
+            web.get(f"{api_prefix}/api/direct-endpoints", self.handle_direct_endpoints),
             web.post(f"{api_prefix}/api/switch", self.handle_switch),
             web.post(f"{api_prefix}/api/upload", self.handle_upload),
             web.post(f"{api_prefix}/api/drop", self.handle_drop),

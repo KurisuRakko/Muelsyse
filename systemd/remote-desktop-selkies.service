@@ -74,6 +74,11 @@ Environment=SELKIES_ENABLE_BASIC_AUTH=false|locked
 Environment=SELKIES_ENABLE_HTTPS=false|locked
 Environment=SELKIES_ENABLE_DUAL_MODE=false|locked
 Environment=SELKIES_ENABLE_RESIZE=true
+# 主数据 WebSocket 的直连线路：页面照旧从公网入口加载，客户端连接前对页面 origin 和这里列的
+# https 基址测 RTT，选快的开 WebSocket（侧栏可手动指定）。直连时 WebSocket 是跨站的，所以
+# 页面 origin 必须在 ALLOWED_ORIGINS 里。两项都从 ~/.config/muelsyse/env 展开，默认空 = 关闭。
+Environment=SELKIES_ALLOWED_ORIGINS=@MUELSYSE_ALLOWED_ORIGINS@
+Environment=SELKIES_DIRECT_WS_URLS=@MUELSYSE_DIRECT_WS_URLS@
 # true：浏览器按服务端下发的 KDE 光标位图，用 CSS cursor:url(...) 自行渲染光标外观。
 # 必须带 |locked：不带锁定时前端按 resolveConditionalSetting 解析这一项——先看服务端
 # 值里的 server.locked，没有锁就改用 localStorage 里 stored 的旧值，也就是「浏览器存过

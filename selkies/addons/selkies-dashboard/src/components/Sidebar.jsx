@@ -25,7 +25,9 @@
  * `audioDeviceSelected` (its own selection mirrored back, so the dropdowns
  * show what the core was told), `gamepadButtonUpdate` and
  * `gamepadAxisUpdate`, `fileUpload` (upload progress and every notification
- * the core raises), `trackpadModeUpdate` and `touchOptionsUpdate`.
+ * the core raises), `trackpadModeUpdate`, `touchOptionsUpdate` and
+ * `wsRouteUpdate` (the session socket's route, its round trip and the names
+ * of the routes the video section's route picker offers).
  *
  * Messages it posts: `settings` (debounced), `pipelineControl`,
  * `gamepadControl`, `setManualResolution`, `resetResolutionToWindow`,
@@ -34,6 +36,7 @@
  * `requestGamingMode`, `mode`, `setSynth`, `sidebarVisibilityChanged`, `TOUCH_GAMEPAD_SETUP`,
  * `TOUCH_GAMEPAD_VISIBILITY`, `touchinput:trackpad`, `touchinput:touch` and
  * `touchinput:options` (with no options it asks for `touchOptionsUpdate`),
+ * `wsRoute` (a route pick; with none it asks for `wsRouteUpdate`),
  * plus whatever channel a conditional-settings spec propagates through. The
  * soft keys dispatch synthetic `KeyboardEvent`s on `window`, and the files
  * section dispatches the `requestFileUpload` DOM event.
@@ -948,6 +951,8 @@ function Sidebar() {
   }, []);
   const isMobile = isMobileClient;
   const [isTrackpadModeActive, setIsTrackpadModeActive] = useState(false);
+  /** The session socket's route as the core reports it (`wsRouteUpdate`); null until it does. */
+  const [wsRoute, setWsRoute] = useState(null);
   /** Direct-touch options as the core reports them (`touchOptionsUpdate`). */
   const [touchOptions, setTouchOptions] = useState({
     native: true, nativeAvailable: false,
@@ -2393,6 +2398,22 @@ function Sidebar() {
    * and is not asked for anything. A failed switch clears the flag again, since
    * no reload follows and a kept flag would hide a real disconnect.
    */
+  /** Hands a route pick to the core, which stores it and reconnects on it. */
+  const handleWsRouteChange = (event) =>
+    window.postMessage({ type: "wsRoute", value: event.target.value }, window.location.origin);
+
+  /**
+   * The route picker's readout: the route the socket is on with its measured
+   * round trip, or that the picked direct route failed and the origin stands in.
+   */
+  const wsRouteReadout = () => {
+    if (wsRoute.fallback) {
+      return t("sections.video.routeFallback", { direct: wsRoute.labels.direct, route: wsRoute.label });
+    }
+    const rtt = Number.isFinite(wsRoute.rttMs) ? ` · ${Math.round(wsRoute.rttMs)} ms` : "";
+    return t("sections.video.routeActive", { route: `${wsRoute.label}${rtt}` });
+  };
+
   const handleStreamModeChange = async (event) => {
     const newMode = event.target.value;
     console.log("Change of stream mode requested:", newMode);
@@ -2831,6 +2852,8 @@ function Sidebar() {
           if (typeof message.enabled === 'boolean') {
             setIsTrackpadModeActive(message.enabled);
           }
+        } else if (message.type === "wsRouteUpdate") {
+          setWsRoute(message);
         } else if (message.type === "touchOptionsUpdate") {
           if (message.options && typeof message.options === 'object') {
             setTouchOptions((prev) => ({ ...prev, ...message.options }));
@@ -2845,6 +2868,7 @@ function Sidebar() {
     };
     window.addEventListener("message", handleWindowMessage);
     window.postMessage({ type: "touchinput:options" }, window.location.origin);
+    window.postMessage({ type: "wsRoute" }, window.location.origin);
     return () => {
       window.removeEventListener("message", handleWindowMessage);
       Object.values(notificationTimeouts.current).forEach((timers) => {
@@ -3262,6 +3286,19 @@ function Sidebar() {
                       </select>{" "}
                     </div>
                   )}
+                {!isWebrtc && wsRoute?.available && !isViewerRole && (
+                  <div className="dev-setting-item">
+                    <label htmlFor="wsRouteSelect">
+                      {t("sections.video.routeLabel")}
+                    </label>
+                    <select id="wsRouteSelect" value={wsRoute.pref} onChange={handleWsRouteChange}>
+                      <option value="auto">{t("sections.video.routeAuto")}</option>
+                      <option value="direct">{wsRoute.labels.direct}</option>
+                      <option value="origin">{wsRoute.labels.origin}</option>
+                    </select>
+                    <p className="device-support-notice">{wsRouteReadout()}</p>
+                  </div>
+                )}
                 {(renderableSettings.encoder ?? true) && (
                   <div className="dev-setting-item">
                     <label htmlFor="encoderSelect">
