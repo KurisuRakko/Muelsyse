@@ -61,6 +61,10 @@ Environment=SELKIES_WEBCAM_ENABLED=false|locked
 Environment=SELKIES_WEBCAM_ON_START=false|locked
 Environment=SELKIES_GAMEPAD_ENABLED=false|locked
 Environment=SELKIES_GAMEPAD_ON_START=false|locked
+# 侧栏只留用得上的：手柄已锁死关闭、分享和 Gaming Mode 单人用不到，这里只隐藏入口。
+Environment=SELKIES_UI_SIDEBAR_SHOW_GAMEPADS=false
+Environment=SELKIES_UI_SIDEBAR_SHOW_SHARING=false
+Environment=SELKIES_UI_SIDEBAR_SHOW_GAMING_MODE=false
 Environment=SELKIES_FILE_TRANSFERS=upload
 Environment=SELKIES_DROP_HELPER=%h/.local/libexec/muelsyse-drop-helper
 Environment=SELKIES_COMMAND_ENABLED=false
